@@ -13,23 +13,44 @@ samtools install that not every machine has (the Colab image has none).
 | `htslib.bam` | 8 records, 2 references, one BGZF data block |
 | `htslib_multiblock.bam` | 4000 records over 15 BGZF blocks |
 | `pacbio_hifi.bam` | 20 real PacBio HiFi reads, 25 BGZF blocks, tag-heavy |
+| `ont_ultralong.bam` | 4 real ONT ultra-long reads; a 254 KB record spanning 4 blocks |
 
 ## What no fixture here covers
 
-Recorded because both were assumed to be covered and are not:
+**The `CG` long-CIGAR overflow**, and only that one. It needs more than 65535
+CIGAR operations in a single record, so the real CIGAR moves into a `CG:B:I`
+tag. `record.rs` covers it with hand-built records; nothing here covers it with
+real data.
 
-- **A record spanning a BGZF block boundary.** htslib calls `bgzf_flush_try`
-  before each record, which starts a new block rather than splitting a record
-  that would not fit. So an htslib-written BAM only splits records *larger than
-  65280 bytes*, and the largest record in any fixture here is 56 KB. That is why
-  `htslib_multiblock.bam`'s blocks hold 65190 bytes rather than a full 65280.
-  Cross-block reads are covered by `cpu.rs`'s
-  `concatenation_is_seamless_across_blocks`, which uses our own writer with a
-  small payload size — necessarily, since htslib will not produce the case.
-- **The `CG` long-CIGAR overflow.** It needs more than 65535 CIGAR operations in
-  one record; HiFi's accuracy caps `pacbio_hifi.bam` at 790. Covered by
-  hand-built records in `record.rs`. **Ultra-long ONT data would exercise both
-  of these**, and is the fixture still worth adding.
+Not for want of looking. `ont_ultralong.bam`'s source was aligned by
+`minimap2 -L`, which is exactly the flag that emits `CG`, so such records should
+exist somewhere in that 187 GB file. A targeted search did not find one:
+
+| searched | records | max `n_cigar_op` |
+|---|---|---|
+| nine region queries across seven chromosomes | ~12,200 | 39,113 |
+| BAI bins at 2^20 / 2^26 / 2^23 / 2^29 | ~15,900 | 46,943 |
+
+~28,000 records and ~370 MB, and the closest was **46,943 ops — 72% of the
+threshold**. The search used the index rather than sampling blindly: BAI puts a
+read in the smallest bin containing its reference span, so the high bins are
+enriched for long reads. Note `samtools view` reconstructs the CIGAR from `CG`
+and *drops the tag*, so the encoding is invisible from SAM text; detecting it
+means reading the raw BAM for `n_cigar_op == 2` plus a `CG` tag.
+
+The longest read seen anywhere was 444,940 bp. Ops per base varies from 0.08 to
+0.21, so overflow needs roughly a 300–800 kb read — rare enough that a bounded
+search missed it, not rare enough to call absent.
+
+### Previously listed here and now fixed
+
+**A record spanning a BGZF block boundary.** This was listed as covered long
+before it was. htslib calls `bgzf_flush_try` before each record and starts a new
+block rather than splitting a record that would not fit, so an htslib-written
+BAM only splits records *larger than 65280 bytes* — and Illumina records are
+~300 bytes while HiFi tops out at 56 KB. That is why `htslib_multiblock.bam`'s
+blocks hold 65190 bytes rather than a full 65280, and why, despite its name, no
+record in it spans anything. `ont_ultralong.bam` fixes this for real.
 
 ## `pacbio_hifi.bam`
 
@@ -112,3 +133,49 @@ r006	83	chr1	37	60	9M	=	7	-39	CAGCGGCAT	IIIIIIIII	NM:i:1
 r007	4	*	0	0	*	*	0	0	AACCGGTTA	IIIIIIIII
 r008	0	chr2	1	40	5M	*	0	0	ACGTN	IIIII	XB:B:i,1,2,3
 ```
+
+## `ont_ultralong.bam`
+
+The cross-block fixture, and the only file here whose records are larger than a
+BGZF block. Four reads from GIAB HG002 ONT ultra-long, 195 references (GRCh38),
+0.40 MB uncompressed over 8 BGZF blocks:
+
+| record | bytes | `l_seq` | CIGAR ops | block boundaries crossed |
+|---|---|---|---|---|
+| 0 | 254,293 | 162,932 | 2,251 | **3** |
+| 1 | 113,876 | 73,028 | 967 | 1 |
+| 2 | 4,277 | **0** | 1,037 | 0 |
+| 3 | 9,535 | 5,556 | 267 | 0 |
+
+Record 2 is a secondary alignment with no stored sequence and no qualities but a
+real 1037-op CIGAR — every variable-length offset in a record is derived from
+`l_seq`, so a zero there is the case most likely to expose offset arithmetic
+that is subtly wrong.
+
+Aux tags are sparser than PacBio's but add one type real HiFi data does not
+contain: `tp:A`, so `A` is now covered by a real file rather than only by
+`htslib.bam`'s hand-written `XA:A:c`. Binary types present: `A`, `C`, `S`, `f`,
+`Z`. No `B` arrays — `pacbio_hifi.bam` covers those.
+
+### Regenerating
+
+Source: [GIAB](https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/data/AshkenazimTrio/HG002_NA24385_son/UCSC_Ultralong_OxfordNanopore_Promethion/HG002_GRCh38_ONT-UL_UCSC_20200508.phased.bam)
+— HG002/NA24385, UCSC ultra-long PromethION, 2020-05-08, phased, aligned to
+GRCh38 with `minimap2 -L`. Public NIST reference data. The source is 187 GB and
+its `.bai` is 54 MB; both are streamed, and the region below was chosen because
+it contains the 162,932 bp read.
+
+```bash
+URL=.../HG002_GRCh38_ONT-UL_UCSC_20200508.phased.bam
+curl -s -o ont.bai "$URL.bai"
+samtools view -H "$URL" > hdr.sam
+samtools view -X "$URL" ont.bai chr18:16636733-16636734 > region.sam
+# Longest read, one mid-size, the sequence-less secondary, one ordinary read.
+# See testdata/README.md history for the exact selection.
+cat hdr.sam picks.sam > fixture.sam
+samtools view -b fixture.sam -o testdata/ont_ultralong.bam
+```
+
+`md5sum` is `82c2240869cff15b09caab4e8b71a248`; as with the others, `samtools
+view -b` stamps its own `@PG` so the bytes are not reproducible across samtools
+versions and the tests assert on content.

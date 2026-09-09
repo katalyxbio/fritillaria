@@ -53,7 +53,13 @@ reads as unaligned BAM, where the basecaller's output lives in aux tags (`MM`/`M
 modifications, per-base kinetics) rather than being trailing detail. Those are decoded: every
 scalar type and every `B` array subtype, zero-copy, validated tag-by-tag against `samtools view`
 on real PacBio HiFi reads. The `CG` long-CIGAR workaround is implemented too, though only tested
-against hand-built records — HiFi is too accurate to reach 65535 CIGAR operations.
+against hand-built records — even ultra-long ONT reads in a 187 GB GIAB file topped out at
+46,943 of the 65,535 operations needed to trigger it.
+
+Ultra-long reads matter for a second reason: an ONT record can be far larger than a 64 KiB BGZF
+block, so records genuinely span blocks and can exceed a whole batch. `testdata/ont_ultralong.bam`
+carries a 254 KB record crossing three block boundaries, and the tests drive the
+carry-the-partial-record loop a real consumer has to write.
 
 ## Status
 
