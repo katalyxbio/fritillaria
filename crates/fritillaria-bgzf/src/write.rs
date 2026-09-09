@@ -20,9 +20,74 @@ pub const DEFAULT_PAYLOAD_SIZE: usize = 0xff00;
 /// Size of the BGZF extra field: the `BC` subfield and nothing else.
 const XLEN: usize = 6;
 /// Header size for the headers this writer emits.
-const HEADER_SIZE: usize = FIXED_HEADER_SIZE + XLEN;
+pub const HEADER_SIZE: usize = FIXED_HEADER_SIZE + XLEN;
 /// Largest deflate payload that still leaves room for framing.
 const MAX_PAYLOAD: usize = MAX_BLOCK_SIZE - HEADER_SIZE - TRAILER_SIZE;
+
+/// Largest **deflate stream** that still fits a block once framed.
+///
+/// The cap BGZF imposes is on the whole block, so this is what a compressor
+/// must come in under — not [`MAX_BLOCK_SIZE`], and not the payload size. It is
+/// the number [`frame_block`] rejects against.
+pub const MAX_DEFLATE_STREAM: usize = MAX_BLOCK_SIZE - HEADER_SIZE - TRAILER_SIZE;
+
+/// Wraps an already-compressed deflate stream as one BGZF block.
+///
+/// Split out of [`BgzfWriter::write_block`] because framing is the half that
+/// has nothing to do with *where* the deflate stream came from: a device codec
+/// produces the stream on the GPU and still needs exactly these 18 header bytes
+/// and 8 trailer bytes around it. Keeping one implementation is what stops the
+/// two paths drifting on the `BC` off-by-one, which is the classic BGZF mistake.
+///
+/// `crc32` and `uncompressed_len` describe the **uncompressed** payload, not the
+/// stream — the gzip trailer is a checksum of the original bytes, so a device
+/// path must checksum before compressing, not after.
+///
+/// The block is appended to `out`, which is *not* cleared first, so blocks can
+/// be concatenated into one buffer.
+///
+/// # Errors
+///
+/// Returns [`Error::Malformed`] if the stream is too large to frame within
+/// BGZF's 64 KiB block cap. That is a real possibility rather than a formality:
+/// deflate can expand incompressible input, and nvCOMP's own worst-case output
+/// for a full block is 2.26x the input. The caller decides what to do about it —
+/// [`BgzfWriter::write_block`] splits the payload and retries, which a device
+/// batch cannot do mid-launch and must handle by re-compressing the offenders.
+pub fn frame_block(
+    out: &mut Vec<u8>,
+    deflate_stream: &[u8],
+    crc32: u32,
+    uncompressed_len: u32,
+) -> Result<()> {
+    let block_size = HEADER_SIZE + deflate_stream.len() + TRAILER_SIZE;
+    if block_size > MAX_BLOCK_SIZE {
+        return Err(Error::Malformed {
+            format: "bgzf",
+            position: 0,
+            reason: format!(
+                "framed block {block_size} exceeds maximum {MAX_BLOCK_SIZE} \
+                 (deflate stream {})",
+                deflate_stream.len()
+            ),
+        });
+    }
+
+    out.extend_from_slice(&[
+        0x1f, 0x8b, 0x08, 0x04, // magic, deflate, FEXTRA
+        0x00, 0x00, 0x00, 0x00, // MTIME: zero, so output is reproducible
+        0x00, 0xff, // XFL, OS = unknown
+    ]);
+    out.extend_from_slice(&(XLEN as u16).to_le_bytes());
+    out.extend_from_slice(&[b'B', b'C', 0x02, 0x00]);
+    // BC holds size MINUS ONE.
+    out.extend_from_slice(&((block_size - 1) as u16).to_le_bytes());
+    out.extend_from_slice(deflate_stream);
+    out.extend_from_slice(&crc32.to_le_bytes());
+    out.extend_from_slice(&uncompressed_len.to_le_bytes());
+
+    Ok(())
+}
 
 /// Writes BGZF blocks to an underlying sink.
 ///
@@ -81,34 +146,24 @@ impl<W: Write> BgzfWriter<W> {
         }
 
         let compressed = miniz_oxide::deflate::compress_to_vec(payload, self.level);
-        let block_size = HEADER_SIZE + compressed.len() + TRAILER_SIZE;
 
         // Deflate can expand pathologically incompressible input past the cap.
-        // Rather than emit an invalid block, split and retry.
-        if block_size > MAX_BLOCK_SIZE {
+        // Rather than emit an invalid block, split and retry. An empty payload
+        // still compresses to a few bytes, so this always terminates.
+        if HEADER_SIZE + compressed.len() + TRAILER_SIZE > MAX_BLOCK_SIZE {
             let mid = payload.len() / 2;
             self.write_block(&payload[..mid])?;
             return self.write_block(&payload[mid..]);
         }
 
         self.buf.clear();
-        self.buf.extend_from_slice(&[
-            0x1f, 0x8b, 0x08, 0x04, // magic, deflate, FEXTRA
-            0x00, 0x00, 0x00, 0x00, // MTIME: zero, so output is reproducible
-            0x00, 0xff, // XFL, OS = unknown
-        ]);
-        self.buf.extend_from_slice(&(XLEN as u16).to_le_bytes());
-        self.buf.extend_from_slice(&[b'B', b'C', 0x02, 0x00]);
-        // BC holds size MINUS ONE.
-        self.buf
-            .extend_from_slice(&((block_size - 1) as u16).to_le_bytes());
-        self.buf.extend_from_slice(&compressed);
-        self.buf
-            .extend_from_slice(&crc32fast::hash(payload).to_le_bytes());
-        self.buf
-            .extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        frame_block(
+            &mut self.buf,
+            &compressed,
+            crc32fast::hash(payload),
+            payload.len() as u32,
+        )?;
 
-        debug_assert_eq!(self.buf.len(), block_size);
         self.inner.write_all(&self.buf)?;
         Ok(())
     }
@@ -227,5 +282,107 @@ mod tests {
     fn rejects_oversized_single_block() {
         let mut writer = BgzfWriter::new(Vec::new());
         assert!(writer.write_block(&vec![0u8; MAX_PAYLOAD + 1]).is_err());
+    }
+
+    /// The extracted seam frames a stream someone else compressed.
+    ///
+    /// This is the path a device codec takes — it hands over a deflate stream
+    /// and the CRC of the bytes *before* compression — so it is checked by
+    /// round-tripping through the ordinary reader rather than by inspecting
+    /// bytes, which would only prove the framing agrees with itself.
+    #[test]
+    fn a_separately_compressed_stream_frames_into_a_readable_block() {
+        let payload = b"framed by one path, compressed by another".repeat(20);
+        let stream = miniz_oxide::deflate::compress_to_vec(&payload, 6);
+
+        let mut out = Vec::new();
+        frame_block(
+            &mut out,
+            &stream,
+            crc32fast::hash(&payload),
+            payload.len() as u32,
+        )
+        .unwrap();
+        out.extend_from_slice(&EOF_BLOCK);
+
+        let blocks = discover_blocks(&out, 0).unwrap();
+        assert_eq!(blocks.len(), 2, "one data block and the EOF block");
+        assert_eq!(blocks[0].isize as usize, payload.len());
+        assert_eq!(blocks[0].crc32, crc32fast::hash(&payload));
+
+        // And it decompresses to the original, which is the actual claim.
+        let mut reader = crate::BgzfReader::new(&out[..]);
+        let mut got = Vec::new();
+        std::io::Read::read_to_end(&mut reader, &mut got).unwrap();
+        assert_eq!(got, payload);
+    }
+
+    /// Both paths must agree byte-for-byte, or the `BC` off-by-one has two
+    /// chances to be wrong instead of one — which is the whole reason framing
+    /// was extracted rather than duplicated.
+    #[test]
+    fn the_seam_produces_exactly_what_the_writer_produces() {
+        let payload = b"identical bytes from either route".repeat(7);
+
+        let mut writer = BgzfWriter::new(Vec::new());
+        writer.write_block(&payload).unwrap();
+        let via_writer = writer.finish().unwrap();
+
+        let mut via_seam = Vec::new();
+        frame_block(
+            &mut via_seam,
+            &miniz_oxide::deflate::compress_to_vec(&payload, 6),
+            crc32fast::hash(&payload),
+            payload.len() as u32,
+        )
+        .unwrap();
+        via_seam.extend_from_slice(&EOF_BLOCK);
+
+        assert_eq!(via_seam, via_writer);
+    }
+
+    /// A deflate stream too large to frame is refused, not truncated.
+    ///
+    /// Unreachable from `write_block`, which splits and retries, but squarely
+    /// reachable from a device batch: nvCOMP's worst-case output for a full
+    /// block is 2.26x the input, well past the 64 KiB whole-block cap, and a
+    /// kernel cannot split mid-launch. So the error is the device path's
+    /// signal to re-compress the offending blocks, and silently emitting a
+    /// block whose `BC` field had wrapped would be the worst outcome available.
+    #[test]
+    fn a_stream_too_large_to_frame_is_an_error() {
+        let mut out = Vec::new();
+        let err = frame_block(&mut out, &vec![0u8; MAX_DEFLATE_STREAM + 1], 0, 0)
+            .expect_err("an unframeable stream must not produce a block");
+        assert!(matches!(err, Error::Malformed { format: "bgzf", .. }));
+
+        // Exactly at the limit is legal — this is a cap, not a margin.
+        out.clear();
+        frame_block(&mut out, &vec![0u8; MAX_DEFLATE_STREAM], 0, 0)
+            .expect("a stream at exactly the limit must frame");
+        assert_eq!(out.len(), MAX_BLOCK_SIZE);
+    }
+
+    /// `frame_block` appends, so a caller can build a stream in one buffer.
+    #[test]
+    fn framing_appends_rather_than_replacing() {
+        let mut out = Vec::new();
+        for payload in [&b"first"[..], b"second", b"third"] {
+            frame_block(
+                &mut out,
+                &miniz_oxide::deflate::compress_to_vec(payload, 6),
+                crc32fast::hash(payload),
+                payload.len() as u32,
+            )
+            .unwrap();
+        }
+        out.extend_from_slice(&EOF_BLOCK);
+
+        assert_eq!(discover_blocks(&out, 0).unwrap().len(), 4);
+
+        let mut reader = crate::BgzfReader::new(&out[..]);
+        let mut got = Vec::new();
+        std::io::Read::read_to_end(&mut reader, &mut got).unwrap();
+        assert_eq!(got, b"firstsecondthird");
     }
 }

@@ -44,7 +44,7 @@ pub use discover::{BlockDiscovery, discover_blocks};
 #[cfg(any(test, feature = "testing"))]
 pub use host_device::HostDeviceCodec;
 pub use read::{BgzfReader, DEFAULT_BLOCKS_PER_BATCH};
-pub use write::{BgzfWriter, DEFAULT_PAYLOAD_SIZE};
+pub use write::{BgzfWriter, DEFAULT_PAYLOAD_SIZE, MAX_DEFLATE_STREAM, frame_block};
 
 // --- vendored ---------------------------------------------------------------
 //
