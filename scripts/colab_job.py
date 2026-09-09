@@ -14,6 +14,7 @@ import os
 import subprocess
 import sys
 import tarfile
+import time
 import urllib.request
 
 TOOLCHAIN = "1.94"
@@ -158,6 +159,19 @@ def main():
 
     # Only the CUDA-gated crate. The CPU paths are already covered locally and
     # rebuilding the whole workspace here costs money for no extra signal.
+    #
+    # The build is timed and reported separately because a fresh VM has no cargo
+    # registry cache and no target/, so this is a genuine cold build and the
+    # only place its cost is observable. Vendoring noodles put sam/vcf/csi into
+    # this crate's transitive tree, against a standing "keep the device crate
+    # thin" constraint; the number below is what decides whether that needs
+    # fixing. Timed in Python rather than with /usr/bin/time, which is absent
+    # from the Colab image and failed silently once already.
+    started = time.monotonic()
+    run(f"cargo build -p fritillaria-cuda --features {features} --tests")
+    build_seconds = time.monotonic() - started
+    print(f"[job] COLD_BUILD_SECONDS {build_seconds:.1f}", flush=True)
+
     output = run(f"cargo test -p fritillaria-cuda --features {features} -- --nocapture")
 
     # Device tests skip when no GPU is present, which is correct locally but a

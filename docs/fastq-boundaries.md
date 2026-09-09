@@ -1,0 +1,98 @@
+# FASTQ record boundaries on device
+
+Measured 2026-09-09, before writing any of it — the same order that changed the
+BCF design twice and killed one of its stages.
+
+## The problem, and why it is not BAM's or BCF's
+
+BAM and BCF records are **length-prefixed**: finding record *n+1* means reading
+record *n*'s length. That is a serial chain, and both formats needed a trick to
+break it — BAM speculates per BGZF block because htslib starts a fresh block per
+alignment, BCF speculates per candidate offset because bcftools does not.
+
+FASTQ is **delimited**, not prefixed. A record is four lines:
+
+```text
+@name [description]
+SEQUENCE
++[name]
+QUALITY
+```
+
+So there is no chain to break. Newlines are findable in parallel with no
+dependency at all. The difficulty moves somewhere else: **deciding which line
+starts a record.** `@` is a legal quality character — Phred+33 `@` is Q31, a
+thoroughly ordinary score — so "line begins with `@`" does not identify a record.
+
+## The validator
+
+At a candidate offset, with no data-dependent loop beyond finding three
+newlines:
+
+1. `buf[p] == '@'`
+2. line 3 begins with `'+'`
+3. `len(line 2) == len(line 4)` — sequence and quality must agree
+
+## What it measures at
+
+Swept at **every byte offset** of three fixtures, against ground truth:
+
+| Fixture | Reads | Offsets swept | Records | Survivors | False positives |
+|---|---|---|---|---|---|
+| `ont_ultralong.fastq.gz` | ONT, 5.5–163 kb | 483,158 | 3 | 3 | **0** |
+| `pacbio_hifi.fastq.gz` | HiFi, 13–20 kb | 279,195 | 8 | 8 | **0** |
+| `illumina.fastq.gz` | 4,000 × 100 bp | 864,000 | 4,000 | 4,000 | **0** |
+| **total** | | **1,626,353** | 4,011 | 4,011 | **0** |
+
+**Survivors equal records exactly.** Unlike BCF — where the sieve let through
+12.7 candidates per 64 KiB block and a second stage had to reject them — the
+FASTQ validator admits nothing but true record starts on real data.
+
+## The decoys are real, which is what makes the zero mean something
+
+A sweep finding no false positives proves nothing if the hard case never
+appears. It does appear:
+
+| Fixture | `@` inside quality lines | Quality lines **starting** with `@` |
+|---|---|---|
+| ONT | 3,499 | 0 |
+| HiFi | 0 | 0 |
+| Illumina | 9,660 | **83** |
+
+**83 quality lines begin with `@`** — the exact decoy the validator exists to
+reject — and 13,159 `@` bytes sit inside quality lines. All rejected.
+
+**Why they are rejected, and it is structural.** Take a decoy `@` inside a
+quality line. Line 1 is the rest of that quality line, line 2 is the next
+record's `@name` line, and line 3 is the next record's *sequence*. The check
+requires line 3 to start with `+`. A sequence line never does — it is
+`ACGTN`. Across all three fixtures, **0 sequence lines start with `+`**.
+
+So the `+` on line 3 does essentially all of the work, and the length check is
+a second line of defence rather than the primary one.
+
+## What follows for the kernel
+
+- **One thread per candidate line start**, exactly as BCF's sieve does, then the
+  same tiling proof: if the survivors tile the buffer, they *are* the true
+  records. A failed tiling falls back to a serial walk, so a wrong guess costs
+  work and never accuracy.
+- **No second validation stage.** BCF keeps one for asymmetry despite it pruning
+  nothing; here there is not even an argument for it, because the survivors are
+  already exact and the sieve is already the full validator.
+- **Candidates are line starts, not every byte.** A newline scan is a trivially
+  parallel pass, and it cuts the candidate set by roughly the average line
+  length before any validation runs.
+
+## What this does not cover
+
+- **Wrapped FASTQ**, where a sequence is split across several lines. Legal in
+  older tools, never written by htslib, and it breaks the length check — so it
+  would fail the tiling and fall back to the serial walk rather than produce
+  wrong boundaries. Detected, not supported.
+- **Plain `.fastq.gz`** — a single DEFLATE stream, which cannot be
+  block-parallel at all. This document is about what happens *after*
+  decompression; getting there is the container's problem, and for plain gzip
+  the container does not cooperate.
+- **Nothing has been timed.** Correctness first, and the BAM reconcile worry
+  turned out to be unfounded — do not assume this one is real either.

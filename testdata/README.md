@@ -296,3 +296,47 @@ bcftools annotate -x INFO/platforms testdata/giab_hg002.bcf \
   unit tests only.
 - **`IDX` in a non-ascending order.** The gap fixture has ascending numbers with
   a hole; nothing produces genuinely permuted ones.
+
+## FASTQ fixtures
+
+Generated from the BAM fixtures already here, so the reads are real and the
+container is htslib's rather than our own writer's — the circularity rule in
+CLAUDE.md applies to FASTQ too.
+
+```bash
+samtools fastq -0 testdata/ont_ultralong.fastq.gz  testdata/ont_ultralong.bam
+samtools fastq -0 testdata/pacbio_hifi.fastq.gz    testdata/pacbio_hifi.bam
+samtools fastq -0 testdata/illumina.fastq.gz       testdata/htslib_multiblock.bam
+```
+
+`-0` and not `-o`: `-o` catches reads flagged READ1/READ2, and these are
+unpaired, so with `-o` they go to stdout and the file gets an empty BGZF stream.
+That looks like success — a valid 28-byte file — which is exactly the sort of
+quiet failure this directory's README exists to prevent.
+
+| File | Reads | Records | Sequence length | BGZF blocks |
+|---|---|---|---|---|
+| `ont_ultralong.fastq.gz` | ONT ultra-long | 3 | 5,556–162,932 | 9 |
+| `pacbio_hifi.fastq.gz` | PacBio HiFi | 8 | 13,661–20,499 | — |
+| `illumina.fastq.gz` | Illumina | 4,000 | 100 | — |
+| `pacbio_hifi.plain.fastq.gz` | PacBio HiFi | 8 | 13,661–20,499 | **none — plain gzip** |
+
+**What each one is for.**
+
+- **ONT** is the seam fixture: a single record of 162,932 bases spans many BGZF
+  blocks, so the carry-the-partial-record loop is exercised for real rather than
+  assumed. Same role `ont_ultralong.bam` plays for BAM.
+- **Illumina** is the *adversarial* one, and the reason it is here rather than
+  being redundant with the others. **83 of its quality lines begin with `@`**,
+  and 13,159 `@` bytes appear inside quality lines — `@` is Phred+33 Q31, an
+  ordinary score. Those are precisely the decoys a record-start scan must
+  reject. Without this fixture a sweep reporting zero false positives would be
+  reporting that the hard case never came up. See `docs/fastq-boundaries.md`.
+- **`pacbio_hifi.plain.fastq.gz`** is a single DEFLATE stream, deliberately not
+  bgzipped: `1f 8b 08 00` versus BGZF's `1f 8b 08 04`. It is the fixture for the
+  path that **cannot** be block-parallel, so the API's refusal to pretend
+  otherwise is testable rather than merely documented.
+
+If any of these is regenerated from different reads, check the decoy counts
+still hold — a fixture that is supposed to exercise a case should assert that it
+does, which is the lesson `htslib_multiblock.bam` taught by not doing it.
