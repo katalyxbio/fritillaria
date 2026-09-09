@@ -13,15 +13,14 @@
 //! for the *round trip* and the floor for the *ratio*, not a byte reference —
 //! see [`BlockCompressor`].
 
+use fritillaria_core::compress::{Framing, choose_framing};
 use fritillaria_core::{
     BlockCodec, BlockCompressor, BlockSpan, CompressedBatch, Error, InflateBatch, MAX_BLOCK_SIZE,
     MAX_COMPRESSIBLE_PAYLOAD, Result,
 };
 
 use crate::block::TRAILER_SIZE;
-use crate::write::{
-    HEADER_SIZE, MAX_DEFLATE_STREAM, STORED_BLOCK_HEADER, frame_block, store_block,
-};
+use crate::write::{HEADER_SIZE, STORED_BLOCK_HEADER, frame_block, store_block};
 
 /// Single-threaded reference implementation of [`BlockCodec`].
 #[derive(Clone, Copy, Debug, Default)]
@@ -152,22 +151,18 @@ impl CpuCompressor {
         }
 
         let deflated = miniz_oxide::deflate::compress_to_vec(payload, self.level);
+        let crc = crc32fast::hash(payload);
+        let isize = payload.len() as u32;
 
-        // Two reasons to store instead, and only the first is about
-        // correctness: a stream over the cap cannot be framed at all, and a
-        // stream merely larger than stored output is a ratio loss for nothing.
-        let stored_len = payload.len() + STORED_BLOCK_HEADER;
-        if deflated.len() > MAX_DEFLATE_STREAM || deflated.len() > stored_len {
-            let mut stored = Vec::with_capacity(stored_len);
-            store_block(payload, &mut stored);
-            frame_block(out, &stored, crc32fast::hash(payload), payload.len() as u32)
-        } else {
-            frame_block(
-                out,
-                &deflated,
-                crc32fast::hash(payload),
-                payload.len() as u32,
-            )
+        // The rule lives in core because the nvCOMP path has to apply the same
+        // one while laying its output out, before any of the bytes exist.
+        match choose_framing(payload.len(), deflated.len()) {
+            Framing::Deflated => frame_block(out, &deflated, crc, isize),
+            Framing::Stored => {
+                let mut stored = Vec::with_capacity(payload.len() + STORED_BLOCK_HEADER);
+                store_block(payload, &mut stored);
+                frame_block(out, &stored, crc, isize)
+            }
         }
     }
 }

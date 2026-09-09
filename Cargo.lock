@@ -520,6 +520,7 @@ dependencies = [
  "fritillaria-fastq",
  "fritillaria-text",
  "libloading",
+ "miniz_oxide",
 ]
 
 [[package]]

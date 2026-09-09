@@ -32,14 +32,16 @@ pub const MAX_DEFLATE_STREAM: usize = MAX_BLOCK_SIZE - HEADER_SIZE - TRAILER_SIZ
 
 /// Bytes a DEFLATE stored block adds to its payload: `BFINAL`/`BTYPE`, `LEN`,
 /// `NLEN`.
-pub const STORED_BLOCK_HEADER: usize = 5;
+pub use fritillaria_core::compress::STORED_BLOCK_HEADER;
 
-// `fritillaria-core` states the chunk limit that makes a compressor's
-// one-block-out-per-block-in guarantee unconditional, but it cannot see the
-// framing sizes that limit is derived from — it has no BGZF dependency, by
-// design. So the derivation is checked here, where both halves are visible, and
-// at compile time: a change to either header size that silently invalidated the
-// guarantee is the failure this catches.
+// `fritillaria-core` states the framing sizes, because the nvCOMP path needs
+// them to lay out its output and cannot depend on this crate. Here they are
+// *derived* from the header layout instead. Checking the two agree, at compile
+// time, is what stops core's numbers drifting into fiction — and a change to
+// either that silently invalidated the one-block-per-chunk guarantee is exactly
+// what this catches.
+const _: () = assert!(HEADER_SIZE == fritillaria_core::compress::BGZF_HEADER_SIZE);
+const _: () = assert!(TRAILER_SIZE == fritillaria_core::compress::BGZF_TRAILER_SIZE);
 const _: () = assert!(MAX_COMPRESSIBLE_PAYLOAD + STORED_BLOCK_HEADER == MAX_DEFLATE_STREAM);
 
 /// Encodes `payload` as a single uncompressed DEFLATE stored block.

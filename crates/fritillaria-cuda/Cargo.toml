@@ -43,6 +43,9 @@ fritillaria-core = { workspace = true, features = ["testing"] }
 # The oracles the kernels are diffed against in tests/. No cycle: neither
 # depends on this crate.
 crc32fast.workspace = true
+# tests/frame_kernel.rs compresses payloads to feed the framing kernel, so it
+# needs the same deflate the CPU reference uses.
+miniz_oxide.workspace = true
 # tests/end_to_end.rs stacks the vendored fritillaria-bam reader on a
 # GPU-backed one — the full-stack proof. No feature needed since the BGZF
 # reader traits are vendored into the same crate as our reader.

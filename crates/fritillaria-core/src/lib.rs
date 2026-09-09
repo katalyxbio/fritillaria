@@ -28,7 +28,9 @@ pub use self::{position::Position, region::Region};
 
 pub use codec::{BlockCodec, BlockSpan, InflateBatch};
 pub use compress::{BlockCompressor, CompressedBatch, MAX_COMPRESSIBLE_PAYLOAD};
-pub use device::{DeviceAlloc, DeviceBlockCodec, DeviceBuffer, DeviceInflateBatch};
+pub use device::{
+    DeviceAlloc, DeviceBlockCodec, DeviceBlockCompressor, DeviceBuffer, DeviceInflateBatch,
+};
 pub use error::{Error, Result};
 pub use virtual_offset::VirtualOffset;
 

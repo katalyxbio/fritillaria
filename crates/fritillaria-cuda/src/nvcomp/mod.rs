@@ -44,7 +44,10 @@
 //!
 //! [`gather`]: https://docs.rs/fritillaria-cuda
 
+pub mod compress;
 pub mod ffi;
+
+pub use compress::{CompressBudget, FramePlan, NvcompCompressor, SlotPlan};
 
 use std::ffi::c_void;
 use std::sync::Arc;

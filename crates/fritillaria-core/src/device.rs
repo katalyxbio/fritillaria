@@ -323,6 +323,52 @@ pub trait DeviceBlockCodec {
     ) -> Result<()>;
 }
 
+/// A backend that compresses device-resident payloads into BGZF blocks.
+///
+/// The write-side mirror of [`DeviceBlockCodec`], and the reason it exists is
+/// the same one: a GPU tool that produces records on the device and then has to
+/// bring them back to the host to compress them pays back exactly the transfer
+/// the read path deletes.
+///
+/// # Why the output is *not* device-resident
+///
+/// Deliberately asymmetric. The terminal operation is writing a file, which
+/// happens on the host, so compressed bytes have to come back — but they are
+/// the *small* side. On real WGS that is 3.4x less traffic than returning the
+/// records would be, and the ratio is the same bandwidth multiplier the read
+/// path's argument rests on. A `DeviceCompressedBatch` would only defer the copy
+/// to a caller who has nothing else to do with it.
+///
+/// # Contract
+///
+/// Identical to [`BlockCompressor`](crate::BlockCompressor): exactly one block
+/// out per chunk in, chunks capped at
+/// [`MAX_COMPRESSIBLE_PAYLOAD`](crate::MAX_COMPRESSIBLE_PAYLOAD), spec-valid
+/// BGZF out, and no EOF block. Implementations are not required to be
+/// byte-identical to the host reference — they cannot be — but inflating their
+/// output must reproduce the input exactly, block for block.
+pub trait DeviceBlockCompressor {
+    /// Human-readable backend name, for diagnostics and benchmark labels.
+    fn name(&self) -> &'static str;
+
+    /// Which device this compressor reads from and allocates on.
+    fn device_ordinal(&self) -> i32;
+
+    /// Compresses each chunk of `data` delimited by `bounds` into one block.
+    ///
+    /// Same shape as [`BlockCompressor::compress_batch`][cb] with the input in
+    /// device memory: `bounds` has length `n + 1`, starts at 0, and ends at
+    /// `data.byte_len()`.
+    ///
+    /// [cb]: crate::BlockCompressor::compress_batch
+    fn compress_batch_device(
+        &self,
+        data: &DeviceBuffer,
+        bounds: &[usize],
+        out: &mut crate::CompressedBatch,
+    ) -> Result<()>;
+}
+
 /// A shared reference to a codec is itself a codec.
 ///
 /// Building a codec compiles kernels and pins a device context, so it is

@@ -31,7 +31,22 @@
 //! BGZF's 64 KiB whole-block cap. Within that limit no input can defeat the
 //! one-to-one mapping.
 
+use crate::MAX_BLOCK_SIZE;
 use crate::error::Result;
+
+/// Bytes of gzip/BGZF header before a block's deflate stream.
+///
+/// 10 fixed gzip bytes, 2 of `XLEN`, and the 6-byte `BC` subfield.
+pub const BGZF_HEADER_SIZE: usize = 18;
+
+/// Bytes of gzip trailer after it: CRC32 then `ISIZE`.
+pub const BGZF_TRAILER_SIZE: usize = 8;
+
+/// Bytes a DEFLATE **stored** block adds to its payload.
+///
+/// One byte of `BFINAL`/`BTYPE`, then `LEN` and `NLEN`. The number matters
+/// because it has no data-dependent term — see [`MAX_COMPRESSIBLE_PAYLOAD`].
+pub const STORED_BLOCK_HEADER: usize = 5;
 
 /// Largest chunk a [`BlockCompressor`] accepts, in uncompressed bytes.
 ///
@@ -47,7 +62,63 @@ use crate::error::Result;
 /// unreachable in practice and buys a total contract.
 ///
 /// [default]: ../fritillaria_bgzf/write/constant.DEFAULT_PAYLOAD_SIZE.html
-pub const MAX_COMPRESSIBLE_PAYLOAD: usize = 65505;
+pub const MAX_COMPRESSIBLE_PAYLOAD: usize = MAX_DEFLATE_STREAM - STORED_BLOCK_HEADER;
+
+/// Largest deflate stream that still fits a block once framed.
+///
+/// The cap BGZF imposes is on the whole block, so this — not
+/// [`MAX_BLOCK_SIZE`] — is what a compressor's output has to come in under.
+pub const MAX_DEFLATE_STREAM: usize = MAX_BLOCK_SIZE - BGZF_HEADER_SIZE - BGZF_TRAILER_SIZE;
+
+/// How one block's payload ends up encoded.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Framing {
+    /// The compressor's deflate stream is used as-is.
+    Deflated,
+    /// The payload is stored verbatim in a DEFLATE stored block.
+    Stored,
+}
+
+/// Chooses between a compressor's output and storing the payload verbatim.
+///
+/// **One rule, two implementations downstream**, which is why it lives here
+/// rather than in either of them: the host reference calls this directly, and
+/// the nvCOMP path calls it while planning where each block lands in the output
+/// stream — a kernel cannot make the choice itself, because the host has to size
+/// the output buffer before the kernel runs. Two copies of the rule would be two
+/// chances to disagree about where a block starts, which is the class of bug
+/// that produces a plausible-looking file rather than an error.
+///
+/// Storing wins in two cases and only the first is about correctness:
+///
+/// - the deflate stream is too large to frame within BGZF's 64 KiB block cap,
+///   which is reachable — nvCOMP's worst case is 2.26x the chunk;
+/// - it is merely *larger* than the payload plus a stored block's 5-byte header,
+///   which is a ratio loss for nothing.
+#[must_use]
+pub fn choose_framing(payload_len: usize, deflate_len: usize) -> Framing {
+    // Compared against the stream limit rather than summing up to the block cap
+    // on purpose: nvCOMP reports sizes this code does not choose, and a sum
+    // would be an overflow rather than a rejection for an absurd one.
+    if deflate_len > MAX_DEFLATE_STREAM || deflate_len > payload_len + STORED_BLOCK_HEADER {
+        Framing::Stored
+    } else {
+        Framing::Deflated
+    }
+}
+
+/// Total framed size of one block, given the choice [`choose_framing`] makes.
+///
+/// The number a host has to know *before* the bytes exist, to lay out a dense
+/// output stream.
+#[must_use]
+pub fn framed_size(payload_len: usize, deflate_len: usize) -> usize {
+    let body = match choose_framing(payload_len, deflate_len) {
+        Framing::Deflated => deflate_len,
+        Framing::Stored => payload_len + STORED_BLOCK_HEADER,
+    };
+    BGZF_HEADER_SIZE + body + BGZF_TRAILER_SIZE
+}
 
 /// Compressed output for a batch of blocks: a ready-to-write BGZF byte stream.
 ///
@@ -255,17 +326,54 @@ mod tests {
         assert!(batch.is_consistent());
     }
 
-    /// The limit is derived, not chosen, so it is checked against its derivation
-    /// rather than restated.
+    /// The limit is derived, not chosen, so the derivation is what is checked.
     #[test]
-    fn the_payload_limit_leaves_room_for_a_stored_block() {
-        const BGZF_HEADER: usize = 18;
-        const GZIP_TRAILER: usize = 8;
-        const STORED_BLOCK_HEADER: usize = 5;
+    fn a_chunk_at_the_limit_frames_to_exactly_one_maximal_block() {
+        assert_eq!(MAX_COMPRESSIBLE_PAYLOAD, 65505);
         assert_eq!(
-            MAX_COMPRESSIBLE_PAYLOAD + BGZF_HEADER + GZIP_TRAILER + STORED_BLOCK_HEADER,
-            crate::MAX_BLOCK_SIZE,
-            "a chunk at the limit must frame to exactly one maximal block"
+            framed_size(MAX_COMPRESSIBLE_PAYLOAD, usize::MAX),
+            MAX_BLOCK_SIZE,
+            "the worst case for the largest legal chunk must be exactly the cap"
         );
+    }
+
+    #[test]
+    fn a_deflate_stream_too_large_to_frame_falls_back_to_storing() {
+        // The reachable case: nvCOMP's worst case is 2.26x the chunk.
+        let payload = 65_280;
+        assert_eq!(choose_framing(payload, 148_256), Framing::Stored);
+        assert_eq!(
+            framed_size(payload, 148_256),
+            BGZF_HEADER_SIZE + payload + STORED_BLOCK_HEADER + BGZF_TRAILER_SIZE
+        );
+    }
+
+    #[test]
+    fn a_stream_that_would_grow_the_payload_falls_back_to_storing() {
+        // Not about the cap — this one would frame fine, it is just a waste.
+        assert_eq!(choose_framing(1000, 1006), Framing::Stored);
+        assert_eq!(
+            framed_size(1000, 1006),
+            BGZF_HEADER_SIZE + 1005 + BGZF_TRAILER_SIZE
+        );
+    }
+
+    #[test]
+    fn a_stream_no_larger_than_a_stored_block_is_used_as_it_is() {
+        // Exactly equal must not flip: switching would change the bytes for no
+        // gain, and the host and device paths would then disagree on a tie.
+        assert_eq!(choose_framing(1000, 1005), Framing::Deflated);
+        assert_eq!(choose_framing(1000, 400), Framing::Deflated);
+        assert_eq!(
+            framed_size(1000, 400),
+            BGZF_HEADER_SIZE + 400 + BGZF_TRAILER_SIZE
+        );
+    }
+
+    #[test]
+    fn an_empty_payload_still_deflates() {
+        // The EOF marker is this case, and it must stay 28 bytes.
+        assert_eq!(choose_framing(0, 2), Framing::Deflated);
+        assert_eq!(framed_size(0, 2), 28);
     }
 }

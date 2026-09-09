@@ -118,8 +118,8 @@ pub use fritillaria_refget as refget;
 
 pub use fritillaria_bgzf::{CpuCodec, CpuCompressor};
 pub use fritillaria_core::{
-    BlockCodec, BlockCompressor, BlockSpan, CompressedBatch, Error, InflateBatch,
-    MAX_COMPRESSIBLE_PAYLOAD, Result, VirtualOffset,
+    BlockCodec, BlockCompressor, BlockSpan, CompressedBatch, DeviceBlockCompressor, Error,
+    InflateBatch, MAX_COMPRESSIBLE_PAYLOAD, Result, VirtualOffset,
 };
 
 /// Which decompression backend to use.

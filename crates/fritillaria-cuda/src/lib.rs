@@ -54,7 +54,7 @@ pub use fastq::FastqScanner;
 pub use text::TextScanner;
 
 #[cfg(feature = "nvcomp")]
-pub use nvcomp::{NvcompCodec, NvcompContext};
+pub use nvcomp::{CompressBudget, NvcompCodec, NvcompCompressor, NvcompContext};
 
 /// The cudarc this crate links, re-exported.
 ///
@@ -109,6 +109,15 @@ pub const TEXT_SCAN_KERNEL_SRC: &str = include_str!("../kernels/text_scan.cu");
 /// Only the nvCOMP path needs this; see [`nvcomp`] for why BGZF payloads have
 /// to be moved before nvCOMP will read them.
 pub const GATHER_KERNEL_SRC: &str = include_str!("../kernels/gather.cu");
+
+/// Source of the BGZF framing kernel, compiled at runtime by NVRTC.
+///
+/// The write-side counterpart to the gather: nvCOMP's *compression* output
+/// alignment is 8 and its sizes are not known before the launch, so compressed
+/// chunks land in padded slots and this gathers the dense BGZF stream out of
+/// them. The CPU reference is `fritillaria_bgzf::frame_block`; see
+/// [`nvcomp::compress`].
+pub const BGZF_FRAME_KERNEL_SRC: &str = include_str!("../kernels/bgzf_frame.cu");
 
 /// Whether this build can use a GPU at all.
 ///

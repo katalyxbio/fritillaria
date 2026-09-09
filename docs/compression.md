@@ -252,6 +252,68 @@ The third is the one worth naming: the gzip trailer checksums the bytes *going
 in*, so a device path must CRC before compressing, not after. It is an easy
 inversion to make and produces a file that only fails on read.
 
+## The device path, built 2026-09-10 — and the pass the read path never needed
+
+`NvcompCompressor` implements `DeviceBlockCompressor`: payloads already in VRAM
+go in, a ready-to-write BGZF stream comes out. Three ways it is *not* the read
+path in reverse, all measured rather than assumed:
+
+| | decompress | compress |
+|---|---|---|
+| output alignment | 1 | **8** |
+| output size known before the launch? | yes, from `ISIZE` | **no** |
+| temp workspace | 0 bytes | **1.11 MB per chunk** |
+
+The first two combine into a pass inflate does not need. Inflate writes straight
+into a dense buffer because every block's inflated size is in its own trailer;
+compression has no such oracle, so nvCOMP writes into padded worst-case slots and
+`kernels/bgzf_frame.cu` gathers the BGZF stream out of them. **That is affordable
+only because it runs over the compressed side** — the same pass on the read path
+would have touched the largest buffer in the pipeline, which is exactly why an
+output alignment of 1 was singled out as the load-bearing measurement there.
+
+**Only two things come back to the host, and their sizes are the point.** Per
+batch: `8 * n` bytes of compressed sizes, needed to lay the dense stream out
+(88 KB for an 11,000-block batch); and the finished stream, because writing a
+file happens on the host. The second is ~3.4x smaller than the records that
+produced it — the ratio working as a bandwidth multiplier in the other direction.
+
+The mid-batch synchronise for those sizes is unavoidable, not an oversight: the
+output cannot be sized until the sizes exist. It is the record-count-scaled
+transfer, not the data-scaled one — the same distinction the BCF scan settled on.
+
+### The framing kernel is tested without a GPU
+
+`kernels/bgzf_frame.cu` is straight-line byte writes — no shared memory, no warp
+cooperation, no atomics — so `tests/frame_kernel.rs` compiles it as ordinary C++
+with `__global__` defined away, loops over the thread indices, and diffs the
+output against `frame_block` **byte for byte on a real fixture**. Four mutations
+in the `.cu` were each confirmed to turn it red:
+
+| Mutation in `bgzf_frame.cu` | Caught by |
+|---|---|
+| `BC` written without the minus-one | all four tests |
+| body copy strides by a literal 32, not `blockDim.x` | only the varying-thread-count test |
+| trailer placed after `deflate_sizes[i]`, ignoring the stored case | two tests |
+| stored block's `NLEN` not complemented | two tests |
+
+This is the rule in *A process lesson, learned five times* applied before the
+fact rather than after: **a remote run should be finding out whether the GPU
+agrees, not whether the header layout is right.** What it deliberately does not
+prove is that NVRTC accepts the source, that the launch configuration is right,
+or anything about nvCOMP — those need hardware, and `tests/nvcomp_compress.rs`
+is where they are checked.
+
+### One rule, not two
+
+`choose_framing` lives in `fritillaria-core` because both paths need it and they
+need it at different times: the host reference calls it as it compresses, and the
+device path calls it while *planning*, since the output buffer must be sized
+before the kernel runs. The kernel is then handed the decision as a flag rather
+than recomputing it. Two copies of that rule would be two chances to disagree
+about where a block starts — which produces a plausible-looking file rather than
+an error.
+
 ## What is still unmeasured
 
 Everything above about nvCOMP is **NVIDIA's claim, not our measurement.** The
@@ -275,6 +337,17 @@ The memory table above *is* ours and needs no device — nvCOMP answers those
 queries on a machine with no driver, which is why they were measured before
 anything was built rather than discovered on a rented VM. Only the ratio and
 throughput columns need hardware.
+
+`tests/nvcomp_compress.rs` is written and asserts (1) at a deliberately loose
+20% floor, because the first run of that test *is* the measurement. Tighten it
+once there are real numbers here — and record them, because a 20% tolerance
+tightened to nothing is a test that no longer says anything.
+
+The one result that would overturn the design is
+`a_higher_algorithm_produces_a_smaller_file` failing: if level 4 is not
+meaningfully smaller than level 0 on real genomic data, the default is paying
+17x the scratch and ~15x the batch size for nothing, and Parabricks' choice is
+simply correct.
 
 ## The API, transcribed
 
