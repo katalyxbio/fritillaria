@@ -7,7 +7,7 @@
 //! exists to avoid in production; here it is the measuring instrument.
 //!
 //! The fixtures are chosen to cover both halves of the boundary-scan algorithm
-//! (see `fritillaria_bam::blocked`):
+//! (see `fritillaria_bam::columnar::blocked`):
 //!
 //! - `htslib.bam`, `htslib_multiblock.bam`, `pacbio_hifi.bam` — every block
 //!   starts on a record boundary, so every speculative walk is right.
@@ -24,7 +24,7 @@
 
 use std::path::PathBuf;
 
-use fritillaria_bam::{Record, RecordBatch, header::parse_header};
+use fritillaria_bam::columnar::{Record, RecordBatch, header::parse_header};
 use fritillaria_bgzf::{CpuCodec, discover_blocks};
 use fritillaria_core::{BlockCodec, DeviceBlockCodec, DeviceInflateBatch, InflateBatch};
 use fritillaria_cuda::{BamDecoder, CudaCodec};

@@ -1,0 +1,27 @@
+[package]
+name = "fritillaria-refget"
+version = "0.10.0"
+authors = ["Michael Macias <zaeleus@gmail.com>"]
+license = "MIT"
+edition.workspace = true
+rust-version.workspace = true
+description = "A refget client"
+homepage = "https://github.com/zaeleus/noodles"
+repository = "https://github.com/zaeleus/noodles"
+documentation = "https://docs.rs/fritillaria-refget"
+categories = ["api-bindings", "science::bioinformatics"]
+
+[dependencies]
+bytes.workspace = true
+fritillaria-core = { path = "../fritillaria-core", version = "0.20.0" }
+reqwest = { workspace = true, features = ["query"] }
+serde.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+reqwest = { workspace = true, features = ["rustls"] }
+serde_test = "1.0.137"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints.rust]
+missing_docs = "warn"

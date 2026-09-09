@@ -8,15 +8,37 @@
 //!
 //! This matters more than any benchmark number:
 //!
-//! | Input | Path |
-//! |---|---|
-//! | BAM, `bgzip`ped FASTQ | block-parallel (the point of this library) |
-//! | plain `.fastq.gz` | **sequential** — a single DEFLATE stream cannot be split |
+//! | Input | Container | Path |
+//! |---|---|---|
+//! | BAM, BCF, `bgzip`ped VCF/FASTQ/text | BGZF | block-parallel (the point of this library) |
+//! | plain `.fastq.gz` | one DEFLATE stream | **sequential** — cannot be split |
+//! | SAM, FASTA, BED, GFF, GTF | text | CPU |
+//! | CRAM | its own | CPU |
 //!
 //! An ordinary `gzip` file is one DEFLATE stream with a 32 KiB sliding window,
 //! so back-references make it inherently serial. [`select_codec`] will not
 //! pretend otherwise, and the API surfaces the distinction rather than quietly
 //! degrading to CPU speed.
+//!
+//! The dividing line is the **container, not the format**: anything inside BGZF
+//! gets the GPU path, because block discovery, parallel inflate, CRC
+//! verification and virtual offsets are all container-level.
+//!
+//! # The format crates
+//!
+//! Every format noodles covers is here, because the CPU implementations *are*
+//! noodles, vendored and renamed (MIT, © 2018 Michael Macias — see
+//! `VENDORED.md`). Migrating is a rename:
+//!
+//! ```ignore
+//! use noodles_bam as bam;        // before
+//! use fritillaria::bam;          // after
+//! ```
+//!
+//! The GPU work is additive on top of that API, and lives in the `columnar`
+//! module of the crates that have one — [`bam::columnar`], [`bcf::columnar`] —
+//! plus the codec-driven readers in [`bgzf`]. Nothing in the vendored API
+//! changed, which is what makes the migration a rename rather than a rewrite.
 //!
 //! # Backend selection
 //!
@@ -35,10 +57,62 @@
 //!
 //! `Auto` prefers nvCOMP, then our own CUDA kernel, then the CPU reference.
 
-pub use fritillaria_bam as bam;
+// Always present: the container, the codec seam, and the GPU backend are what
+// this crate is, not formats it re-exports.
 pub use fritillaria_bgzf as bgzf;
 pub use fritillaria_core as core;
 pub use fritillaria_cuda as cuda;
+
+// BGZF-contained: these get the GPU path.
+#[cfg(feature = "bam")]
+#[doc(inline)]
+pub use fritillaria_bam as bam;
+#[cfg(feature = "bcf")]
+#[doc(inline)]
+pub use fritillaria_bcf as bcf;
+#[cfg(feature = "csi")]
+#[doc(inline)]
+pub use fritillaria_csi as csi;
+#[cfg(feature = "tabix")]
+#[doc(inline)]
+pub use fritillaria_tabix as tabix;
+
+// Data models and text formats: CPU, and labelled as such.
+#[cfg(feature = "bed")]
+#[doc(inline)]
+pub use fritillaria_bed as bed;
+#[cfg(feature = "cram")]
+#[doc(inline)]
+pub use fritillaria_cram as cram;
+#[cfg(feature = "fasta")]
+#[doc(inline)]
+pub use fritillaria_fasta as fasta;
+#[cfg(feature = "fastq")]
+#[doc(inline)]
+pub use fritillaria_fastq as fastq;
+#[cfg(feature = "gff")]
+#[doc(inline)]
+pub use fritillaria_gff as gff;
+#[cfg(feature = "gtf")]
+#[doc(inline)]
+pub use fritillaria_gtf as gtf;
+#[cfg(feature = "sam")]
+#[doc(inline)]
+pub use fritillaria_sam as sam;
+#[cfg(feature = "util")]
+#[doc(inline)]
+pub use fritillaria_util as util;
+#[cfg(feature = "vcf")]
+#[doc(inline)]
+pub use fritillaria_vcf as vcf;
+
+// Remote access. Off by default: these pull in a TLS stack.
+#[cfg(feature = "htsget")]
+#[doc(inline)]
+pub use fritillaria_htsget as htsget;
+#[cfg(feature = "refget")]
+#[doc(inline)]
+pub use fritillaria_refget as refget;
 
 pub use fritillaria_bgzf::CpuCodec;
 pub use fritillaria_core::{BlockCodec, BlockSpan, Error, InflateBatch, Result, VirtualOffset};

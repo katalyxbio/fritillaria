@@ -7,6 +7,20 @@ members = [
     "crates/fritillaria-bam",
     "crates/fritillaria-bcf",
     "crates/fritillaria-cuda",
+    # Derived from noodles (MIT, (c) 2018 Michael Macias); see VENDORED.md.
+    "crates/fritillaria-bed",
+    "crates/fritillaria-cram",
+    "crates/fritillaria-csi",
+    "crates/fritillaria-fasta",
+    "crates/fritillaria-fastq",
+    "crates/fritillaria-gff",
+    "crates/fritillaria-gtf",
+    "crates/fritillaria-htsget",
+    "crates/fritillaria-refget",
+    "crates/fritillaria-sam",
+    "crates/fritillaria-tabix",
+    "crates/fritillaria-util",
+    "crates/fritillaria-vcf",
 ]
 
 [workspace.package]
@@ -17,24 +31,56 @@ license = "Apache-2.0"
 repository = "https://github.com/alessandrogiannini/fritillaria"
 
 [workspace.dependencies]
-fritillaria-core = { path = "crates/fritillaria-core", version = "0.0.0" }
-fritillaria-bgzf = { path = "crates/fritillaria-bgzf", version = "0.0.0" }
-fritillaria-bam = { path = "crates/fritillaria-bam", version = "0.0.0" }
-fritillaria-bcf = { path = "crates/fritillaria-bcf", version = "0.0.0" }
+# The four merged crates carry the vendored version numbers, because the
+# vendored manifests refer to each other by `version` as well as `path`.
+fritillaria-core = { path = "crates/fritillaria-core", version = "0.20.0" }
+fritillaria-bgzf = { path = "crates/fritillaria-bgzf", version = "0.51.0" }
+fritillaria-bam = { path = "crates/fritillaria-bam", version = "0.95.0" }
+fritillaria-bcf = { path = "crates/fritillaria-bcf", version = "0.91.0" }
 fritillaria-cuda = { path = "crates/fritillaria-cuda", version = "0.0.0" }
+
+fritillaria-bed = { path = "crates/fritillaria-bed", version = "0.39.0" }
+fritillaria-cram = { path = "crates/fritillaria-cram", version = "0.99.0" }
+fritillaria-csi = { path = "crates/fritillaria-csi", version = "0.61.0" }
+fritillaria-fasta = { path = "crates/fritillaria-fasta", version = "0.66.0" }
+fritillaria-fastq = { path = "crates/fritillaria-fastq", version = "0.23.0" }
+fritillaria-gff = { path = "crates/fritillaria-gff", version = "0.62.0" }
+fritillaria-gtf = { path = "crates/fritillaria-gtf", version = "0.57.0" }
+fritillaria-htsget = { path = "crates/fritillaria-htsget", version = "0.12.0" }
+fritillaria-refget = { path = "crates/fritillaria-refget", version = "0.10.0" }
+fritillaria-sam = { path = "crates/fritillaria-sam", version = "0.90.0" }
+fritillaria-tabix = { path = "crates/fritillaria-tabix", version = "0.67.0" }
+fritillaria-util = { path = "crates/fritillaria-util", version = "0.85.0" }
+fritillaria-vcf = { path = "crates/fritillaria-vcf", version = "0.93.0" }
 
 crc32fast = "1.5.1"
 # nvCOMP is dlopened at runtime rather than linked, so the workspace still
 # builds with `--features nvcomp` on a machine that has no nvCOMP installed —
 # the same discipline cudarc's `dynamic-loading` gives us for libcuda.
 libloading = "0.9.0"
-noodles-bgzf = "0.51.0"
-noodles-bam = "0.95.0"
-noodles-bcf = "0.91.0"
-noodles-sam = "0.90.0"
-noodles-vcf = "0.93.0"
 miniz_oxide = "0.9.1"
 thiserror = "2.0.20"
+
+# Inherited from the vendored noodles workspace. Kept at the versions it
+# pinned, so the vendored crates build exactly as they did upstream.
+bitflags = "2.0.2"
+bstr = { version = "1.9.0", default-features = false, features = ["std"] }
+bytes = "1.10.0"
+flate2 = { version = "1.1.0", default-features = false, features = ["zlib-rs"] }
+futures = { version = "0.3.15", default-features = false }
+indexmap = "2.0.0"
+lexical-core = "1.0.0"
+libdeflater = "1.19.0"
+memchr = "2.3.3"
+percent-encoding = "2.1.0"
+pin-project-lite = "0.2.6"
+reqwest = { version = "0.13.1", default-features = false, features = [
+    "json",
+    "stream",
+] }
+serde = { version = "1.0.136", features = ["derive"] }
+tokio = "1.10.0"
+url = "2.2.2"
 
 # Pinned to the CUDA version on the verified Colab image (12.8). `dynamic-loading`
 # dlopens libcuda at runtime, so this crate compiles on machines with no CUDA install.
@@ -58,6 +104,12 @@ doc_markdown = "allow"
 missing_errors_doc = "allow"
 module_name_repetitions = "allow"
 pedantic = { level = "warn", priority = -1 }
+
+[profile.dev]
+# Vendoring brought 132 examples and 18 crates' worth of test binaries with it,
+# and full debuginfo on all of them overran a 65 GB disk. Line tables keep
+# backtraces useful at a fraction of the size.
+debug = "line-tables-only"
 
 [profile.bench]
 debug = true

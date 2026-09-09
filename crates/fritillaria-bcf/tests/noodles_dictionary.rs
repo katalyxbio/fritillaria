@@ -18,10 +18,10 @@
 
 use std::path::PathBuf;
 
-use fritillaria_bcf::header::parse_header;
+use fritillaria_bcf::columnar::header::parse_header;
 use fritillaria_bgzf::{CpuCodec, discover_blocks};
 use fritillaria_core::{BlockCodec, InflateBatch};
-use noodles_vcf::{self as vcf, header::StringMaps};
+use fritillaria_vcf::{self as vcf, header::StringMaps};
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

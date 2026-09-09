@@ -29,9 +29,11 @@ is why this needs designing rather than just writing:
    the whole workspace builds and tests on a machine with no toolkit.
 2. **Device memory and streams live in `fritillaria-cuda::backend` and nowhere else.** No raw
    pointer or device-tied lifetime may escape into `fritillaria-bam`, `-bcf`, `-bgzf`.
-3. **The noodles drop-in must keep working, unchanged.** It is the migration path. Existing
-   code doing `bam::io::Reader::from(BgzfReader::with_codec(f, codec))` must not break, and
-   must not be made worse to accommodate the columnar path.
+3. **The drop-in must keep working, unchanged.** It is the migration path. Existing code doing
+   `bam::io::Reader::from(BgzfReader::with_codec(f, codec))` must not break, and must not be
+   made worse to accommodate the columnar path. Since the vendoring this is stronger, not
+   weaker: `bam::io::Reader` *is* noodles' reader, byte-for-byte, so breaking it would mean
+   editing vendored code and forfeiting the rebase path in `VENDORED.md`.
 4. **Verification is mandatory.** CRC32 and `ISIZE` are checked in device mode too. Going
    device-resident must not become a way to silently skip verification.
 

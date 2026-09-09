@@ -1,0 +1,41 @@
+//! Vendored from noodles; see VENDORED.md.
+//!
+//! The four merged crates apply this workspace's pedantic lint set, which
+//! upstream does not. Relaxed here rather than rewritten, so the file stays
+//! diffable against upstream.
+#![allow(clippy::pedantic)]
+
+//! Decompresses a BGZF file.
+//!
+//! The result matches the output of `bgzip --threads $(nproc) --decompress --stdout <src>`.
+
+use std::{
+    env,
+    fs::File,
+    io::{self, BufReader, BufWriter},
+    num::NonZero,
+    thread,
+};
+
+use fritillaria_bgzf as bgzf;
+
+fn main() -> io::Result<()> {
+    let mut args = env::args().skip(1);
+
+    let src = args.next().expect("missing src");
+    let worker_count = args
+        .next()
+        .map(|s| s.parse().expect("invalid worker count"))
+        .unwrap_or_else(|| thread::available_parallelism().unwrap_or(NonZero::<usize>::MIN));
+
+    let mut reader = File::open(src)
+        .map(BufReader::new)
+        .map(|f| bgzf::io::MultithreadedReader::with_worker_count(worker_count, f))?;
+
+    let stdout = io::stdout().lock();
+    let mut writer = BufWriter::new(stdout);
+
+    io::copy(&mut reader, &mut writer)?;
+
+    Ok(())
+}

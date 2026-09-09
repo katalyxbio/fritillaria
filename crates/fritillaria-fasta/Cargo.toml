@@ -1,0 +1,32 @@
+[package]
+name = "fritillaria-fasta"
+version = "0.66.0"
+authors = ["Michael Macias <zaeleus@gmail.com>"]
+license = "MIT"
+edition.workspace = true
+rust-version.workspace = true
+description = "FASTA format reader and writer"
+homepage = "https://github.com/zaeleus/noodles"
+repository = "https://github.com/zaeleus/noodles"
+documentation = "https://docs.rs/fritillaria-fasta"
+categories = ["parser-implementations", "science::bioinformatics"]
+
+[features]
+async = ["dep:tokio"]
+
+[dependencies]
+bstr.workspace = true
+memchr.workspace = true
+fritillaria-bgzf = { path = "../fritillaria-bgzf", version = "0.51.0" }
+fritillaria-core = { path = "../fritillaria-core", version = "0.20.0" }
+
+tokio = { workspace = true, optional = true, features = ["fs", "io-util"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints.rust]
+missing_docs = "warn"
+
+[package.metadata.docs.rs]
+features = ["async"]

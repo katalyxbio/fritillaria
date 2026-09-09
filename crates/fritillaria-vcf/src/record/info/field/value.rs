@@ -1,0 +1,117 @@
+use std::io;
+
+use crate::{
+    header::record::value::map::info::{Number, Type},
+    io::reader::record_buf::value::percent_decode,
+    variant::record::info::field::{Value, value::Array},
+};
+
+pub(super) fn parse_value(src: &str, number: Number, ty: Type) -> io::Result<Value<'_>> {
+    match (number, ty) {
+        (Number::Count(0), Type::Flag) => parse_flag_value(src),
+        (Number::Count(0), _) | (_, Type::Flag) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid number for type",
+        )),
+        (Number::Count(1), Type::Integer) => parse_integer_value(src),
+        (Number::Count(1), Type::Float) => parse_float_value(src),
+        (Number::Count(1), Type::Character) => parse_character_value(src),
+        (Number::Count(1), Type::String) => parse_string_value(src),
+        (_, Type::Integer) => parse_integer_array_value(src),
+        (_, Type::Float) => parse_float_array_value(src),
+        (_, Type::Character) => parse_character_array_value(src),
+        (_, Type::String) => parse_string_array_value(src),
+    }
+}
+
+fn parse_integer_value(src: &str) -> io::Result<Value<'_>> {
+    src.parse()
+        .map(Value::Integer)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+}
+
+fn parse_float_value(src: &str) -> io::Result<Value<'_>> {
+    src.parse()
+        .map(Value::Float)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+}
+
+fn parse_flag_value(src: &str) -> io::Result<Value<'_>> {
+    if src.is_empty() {
+        Ok(Value::Flag)
+    } else {
+        Err(io::Error::new(io::ErrorKind::InvalidData, "invalid flag"))
+    }
+}
+
+fn parse_character_value(src: &str) -> io::Result<Value<'_>> {
+    let s = percent_decode(src).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let mut chars = s.chars();
+
+    if let Some(c) = chars.next()
+        && chars.next().is_none()
+    {
+        return Ok(Value::Character(c));
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        "invalid character",
+    ))
+}
+
+fn parse_string_value(src: &str) -> io::Result<Value<'_>> {
+    use crate::io::reader::record_buf::value::percent_decode;
+
+    percent_decode(src)
+        .map(Value::String)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+}
+
+fn parse_integer_array_value(src: &str) -> io::Result<Value<'_>> {
+    Ok(Value::Array(Array::Integer(Box::new(src))))
+}
+
+fn parse_float_array_value(src: &str) -> io::Result<Value<'_>> {
+    Ok(Value::Array(Array::Float(Box::new(src))))
+}
+
+fn parse_character_array_value(src: &str) -> io::Result<Value<'_>> {
+    Ok(Value::Array(Array::Character(Box::new(src))))
+}
+
+fn parse_string_array_value(src: &str) -> io::Result<Value<'_>> {
+    Ok(Value::Array(Array::String(Box::new(src))))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_character_value() -> io::Result<()> {
+        assert!(matches!(parse_character_value("a")?, Value::Character('a')));
+
+        assert!(matches!(
+            parse_character_value("%3B")?,
+            Value::Character(';')
+        ));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_string_value() -> io::Result<()> {
+        assert!(matches!(
+            parse_string_value("")?,
+            Value::String(s) if s.is_empty()
+        ));
+
+        assert!(matches!(
+            parse_string_value("a%3Bb")?,
+            Value::String(s) if s == "a;b"
+        ));
+
+        Ok(())
+    }
+}

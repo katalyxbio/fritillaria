@@ -1,0 +1,29 @@
+[package]
+name = "fritillaria-htsget"
+version = "0.12.0"
+authors = ["Michael Macias <zaeleus@gmail.com>"]
+license = "MIT"
+edition.workspace = true
+rust-version.workspace = true
+description = "An htsget client"
+homepage = "https://github.com/zaeleus/noodles"
+repository = "https://github.com/zaeleus/noodles"
+documentation = "https://docs.rs/fritillaria-htsget"
+categories = ["api-bindings", "science::bioinformatics"]
+
+[dependencies]
+base64 = "0.23.0"
+bytes.workspace = true
+futures = { workspace = true, features = ["std"] }
+fritillaria-core = { path = "../fritillaria-core", version = "0.20.0" }
+reqwest.workspace = true
+serde.workspace = true
+url = { workspace = true, features = ["serde"] }
+
+[dev-dependencies]
+reqwest = { workspace = true, features = ["rustls"] }
+serde_test = "1.0.137"
+tokio = { workspace = true, features = ["io-std", "macros", "rt-multi-thread"] }
+
+[lints.rust]
+missing_docs = "warn"

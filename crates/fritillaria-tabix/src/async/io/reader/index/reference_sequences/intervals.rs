@@ -1,0 +1,93 @@
+use fritillaria_bgzf as bgzf;
+use tokio::io::{self, AsyncRead, AsyncReadExt};
+
+pub(super) async fn read_intervals<R>(reader: &mut R) -> io::Result<Vec<bgzf::VirtualPosition>>
+where
+    R: AsyncRead + Unpin,
+{
+    // n_intv
+    let interval_count = read_interval_count(reader).await?;
+
+    let mut intervals = Vec::with_capacity(interval_count);
+
+    for _ in 0..interval_count {
+        // ioff
+        let offset = reader
+            .read_u64_le()
+            .await
+            .map(bgzf::VirtualPosition::from)?;
+
+        intervals.push(offset);
+    }
+
+    Ok(intervals)
+}
+
+async fn read_interval_count<R>(reader: &mut R) -> io::Result<usize>
+where
+    R: AsyncRead + Unpin,
+{
+    reader
+        .read_i32_le()
+        .await
+        .and_then(|n| usize::try_from(n).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_read_intervals() -> io::Result<()> {
+        let src = [
+            0x00, 0x00, 0x00, 0x00, // n_intv = 0
+        ];
+        assert!(read_intervals(&mut &src[..]).await?.is_empty());
+
+        let src = [
+            0x01, 0x00, 0x00, 0x00, // n_intv = 1
+            0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // ioffset[0] = 8
+        ];
+        assert_eq!(
+            read_intervals(&mut &src[..]).await?,
+            vec![bgzf::VirtualPosition::from(8)]
+        );
+
+        let src = [
+            0xff, 0xff, 0xff, 0xff, // n_intv = -1
+        ];
+        assert!(matches!(
+            read_intervals(&mut &src[..]).await,
+            Err(e) if e.kind() == io::ErrorKind::InvalidData
+        ));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_read_interval_count() -> io::Result<()> {
+        assert_eq!(
+            read_interval_count(&mut &[0x00, 0x00, 0x00, 0x00][..]).await?,
+            0
+        );
+        assert_eq!(
+            read_interval_count(&mut &[0x01, 0x00, 0x00, 0x00][..]).await?,
+            1
+        );
+        assert_eq!(
+            read_interval_count(&mut &[0x00, 0x01, 0x00, 0x00][..]).await?,
+            256
+        );
+
+        assert!(matches!(
+            read_interval_count(&mut io::empty()).await,
+            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof
+        ));
+        assert!(matches!(
+            read_interval_count(&mut &[0xff, 0xff, 0xff, 0xff][..]).await,
+            Err(e) if e.kind() == io::ErrorKind::InvalidData
+        ));
+
+        Ok(())
+    }
+}

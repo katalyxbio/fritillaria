@@ -73,12 +73,12 @@ pub const INFLATE_KERNEL_SRC: &str = include_str!("../kernels/inflate.cu");
 /// Source of the BAM boundary-scan and columnar decode kernels, compiled at
 /// runtime by NVRTC.
 ///
-/// The CPU reference for these is `fritillaria_bam::blocked`; see [`bam`].
+/// The CPU reference for these is `fritillaria_bam::columnar::blocked`; see [`bam`].
 pub const BAM_DECODE_KERNEL_SRC: &str = include_str!("../kernels/bam_decode.cu");
 
 /// Source of the BCF boundary-scan kernels, compiled at runtime by NVRTC.
 ///
-/// The CPU reference for these is `fritillaria_bcf::speculative`; see [`bcf`].
+/// The CPU reference for these is `fritillaria_bcf::columnar::speculative`; see [`bcf`].
 pub const BCF_SCAN_KERNEL_SRC: &str = include_str!("../kernels/bcf_scan.cu");
 
 /// Source of the payload-restaging kernel, compiled at runtime by NVRTC.

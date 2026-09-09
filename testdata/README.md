@@ -206,7 +206,7 @@ Measured on these files:
 So a BCF record straddles essentially every interior block boundary, where a
 BAM record straddles almost none. That inverts the assumption
 `fritillaria-bam`'s device scan is built on, and it is why
-`fritillaria-bcf::looks_like_a_record` exists. See `docs/bcf-boundaries.md`.
+`fritillaria-bcf::columnar::looks_like_a_record` exists. See `docs/bcf-boundaries.md`.
 
 ### `kg_phase3.bcf`
 

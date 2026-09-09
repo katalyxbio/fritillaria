@@ -28,7 +28,9 @@
 
 use std::time::Instant;
 
-use fritillaria_bcf::{header::parse_header, looks_like_a_record, record::Record, scan_records};
+use fritillaria_bcf::columnar::{
+    header::parse_header, looks_like_a_record, record::Record, scan_records,
+};
 use fritillaria_bgzf::{CpuCodec, discover_blocks};
 use fritillaria_core::{BlockCodec, InflateBatch};
 
@@ -106,7 +108,7 @@ fn main() {
 fn sweep(
     buf: &[u8],
     block_starts: &[usize],
-    header: &fritillaria_bcf::Header,
+    header: &fritillaria_bcf::columnar::Header,
     samples: u32,
     contigs: u32,
     offsets: &[usize],

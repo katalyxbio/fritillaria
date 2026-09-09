@@ -1,0 +1,68 @@
+[package]
+name = "fritillaria-sam"
+version = "0.90.0"
+authors = ["Michael Macias <zaeleus@gmail.com>"]
+license = "MIT"
+edition.workspace = true
+rust-version.workspace = true
+description = "Sequence Alignment/Map (SAM) format reader and writer"
+homepage = "https://github.com/zaeleus/noodles"
+repository = "https://github.com/zaeleus/noodles"
+documentation = "https://docs.rs/fritillaria-sam"
+categories = ["parser-implementations", "science::bioinformatics"]
+
+[features]
+async = [
+  "dep:futures",
+  "dep:pin-project-lite",
+  "dep:tokio",
+  "fritillaria-bgzf/async",
+  "fritillaria-csi/async",
+]
+
+[dependencies]
+bitflags.workspace = true
+bstr.workspace = true
+indexmap.workspace = true
+lexical-core.workspace = true
+memchr.workspace = true
+fritillaria-bgzf = { path = "../fritillaria-bgzf", version = "0.51.0" }
+fritillaria-core = { path = "../fritillaria-core", version = "0.20.0" }
+fritillaria-csi = { path = "../fritillaria-csi", version = "0.61.0" }
+
+futures = { workspace = true, optional = true, features = ["std"] }
+pin-project-lite = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true, features = ["io-util"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["fs", "io-std", "macros", "rt-multi-thread"] }
+
+[lints.rust]
+missing_docs = "warn"
+
+[package.metadata.docs.rs]
+features = ["async"]
+
+[[example]]
+name = "sam_count_async"
+required-features = ["async"]
+
+[[example]]
+name = "sam_query_async"
+required-features = ["async"]
+
+[[example]]
+name = "sam_read_header_async"
+required-features = ["async"]
+
+[[example]]
+name = "sam_reheader_async"
+required-features = ["async"]
+
+[[example]]
+name = "sam_view_async"
+required-features = ["async"]
+
+[[example]]
+name = "sam_write_async"
+required-features = ["async"]

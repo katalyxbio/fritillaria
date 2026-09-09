@@ -12,9 +12,9 @@
 //!
 //! # Interop
 //!
-//! With the `noodles` feature this implements `noodles_bgzf::io::Read` and
+//! With the `noodles` feature this implements `fritillaria_bgzf::io::Read` and
 //! `BufRead`, which is the seam every noodles format crate is generic over. A
-//! `noodles_bam::io::Reader` built on top of this decompresses on the GPU
+//! `fritillaria_bam::io::Reader` built on top of this decompresses on the GPU
 //! while noodles does the record parsing — and the same holds for BCF,
 //! `bgzip`ped VCF, and anything tabix-indexed.
 
@@ -256,19 +256,21 @@ impl<R: Read, C: BlockCodec> BufRead for BgzfReader<R, C> {
     }
 }
 
-#[cfg(feature = "noodles")]
-mod noodles_impl {
+// The two traits every format reader in this workspace is generic over. They
+// used to live in an external crate and so sat behind a feature; now that the
+// CPU path is vendored alongside, the drop-in property is unconditional.
+mod trait_impls {
     use super::{BgzfReader, BlockCodec, Read};
 
-    impl<R: Read, C: BlockCodec> noodles_bgzf::io::Read for BgzfReader<R, C> {
-        fn virtual_position(&self) -> noodles_bgzf::VirtualPosition {
-            noodles_bgzf::VirtualPosition::from(self.virtual_offset().as_u64())
+    impl<R: Read, C: BlockCodec> crate::io::Read for BgzfReader<R, C> {
+        fn virtual_position(&self) -> crate::VirtualPosition {
+            crate::VirtualPosition::from(self.virtual_offset().as_u64())
         }
     }
 
-    // No methods of its own: the marker that makes every noodles format crate
+    // No methods of its own: the marker that makes every format crate here
     // accept this reader.
-    impl<R: Read, C: BlockCodec> noodles_bgzf::io::BufRead for BgzfReader<R, C> {}
+    impl<R: Read, C: BlockCodec> crate::io::BufRead for BgzfReader<R, C> {}
 }
 
 #[cfg(test)]

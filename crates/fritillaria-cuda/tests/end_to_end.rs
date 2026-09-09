@@ -12,9 +12,9 @@
 
 use std::path::PathBuf;
 
+use fritillaria_bam as bam;
 use fritillaria_bgzf::BgzfReader;
 use fritillaria_cuda::CudaCodec;
-use noodles_bam as bam;
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

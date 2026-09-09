@@ -1,10 +1,14 @@
 [package]
 name = "fritillaria-core"
 description = "Shared types and backend traits for fritillaria."
-version.workspace = true
+# Carries the vendored noodles-core version: the vendored crates refer to each
+# other by `version` as well as by `path`.
+version = "0.20.0"
 edition.workspace = true
 rust-version.workspace = true
-license.workspace = true
+# Mixed: the backend seam is ours, `position`/`region` are vendored from
+# noodles-core. See VENDORED.md.
+license = "Apache-2.0 AND MIT"
 repository.workspace = true
 
 [features]
@@ -13,6 +17,7 @@ repository.workspace = true
 testing = []
 
 [dependencies]
+bstr.workspace = true
 thiserror.workspace = true
 
 [lints]

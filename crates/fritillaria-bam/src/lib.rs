@@ -1,33 +1,82 @@
-//! BAM parsing.
+//! **fritillaria-bam** handles the reading and writing of the BAM (Binary Alignment/Map) file
+//! format.
 //!
-//! # Why this is split into two stages
+//! The BAM format contains the same information as SAM (Sequence Alignment/Map), namely a SAM
+//! header and a list of records.
 //!
-//! BAM records are variable-length and length-prefixed, so finding record *n+1*
-//! requires having read record *n*. That makes boundary discovery inherently
-//! sequential ([`record::scan_records`]) — but it is cheap, because it touches
-//! only the 4-byte `block_size` prefix of each record and skips the body.
+//! # Two APIs
 //!
-//! Once boundaries are known, records become embarrassingly parallel: that is
-//! [`batch`], which decodes fixed-width fields into columns.
+//! [`io`], [`bai`], [`fs`], [`record`] and [`r#async`] are vendored from
+//! `noodles-bam` (MIT, © 2018 Michael Macias) and are the drop-in CPU API. Put
+//! a [`BgzfReader`](fritillaria_bgzf::BgzfReader) underneath [`io::Reader`] and
+//! they decompress on the GPU without any other change.
 //!
-//! Records span BGZF block boundaries, so both stages run over the
-//! *concatenated* decompressed buffer, never per block.
+//! [`columnar`] is ours, and is the part that has no equivalent upstream: it
+//! turns an inflated buffer into columns, and can keep them in device memory.
+//!
+//! See `VENDORED.md` for the provenance of every module.
+//!
+//! # Examples
+//!
+//! ## Read all records
+//!
+//! ```no_run
+//! # use std::{fs::File, io};
+//! use fritillaria_bam as bam;
+//!
+//! let mut reader = File::open("sample.bam").map(bam::io::Reader::new)?;
+//! let header = reader.read_header()?;
+//!
+//! for result in reader.records() {
+//!     let record = result?;
+//!     // ...
+//! }
+//! # Ok::<_, io::Error>(())
+//! ```
+//!
+//! ## Query records
+//!
+//! Querying allows filtering records by region. It requires an associated BAM index (BAI).
+//!
+//! ```no_run
+//! # use std::fs::File;
+//! use fritillaria_bam as bam;
+//!
+//! let mut reader = bam::io::indexed_reader::Builder::default().build_from_path("sample.bam")?;
+//! let header = reader.read_header()?;
+//!
+//! let region = "sq0:5-8".parse()?;
+//! let query = reader.query(&header, &region)?;
+//!
+//! for result in query.records() {
+//!     let record = result?;
+//!     // ...
+//! }
+//! # Ok::<_, Box<dyn std::error::Error>>(())
+//! ```
 
-pub mod aux;
-pub mod batch;
-pub mod blocked;
-pub mod device;
-pub mod header;
+// --- ours -------------------------------------------------------------------
+
+pub mod columnar;
+
+// --- vendored ---------------------------------------------------------------
+//
+// Not reformatted to this workspace's lint set: keeping it diffable against
+// upstream is worth more than uniform style.
+
+#[cfg(feature = "async")]
+#[allow(clippy::pedantic, missing_debug_implementations, unreachable_pub)]
+pub mod r#async;
+
+#[allow(clippy::pedantic, missing_debug_implementations, unreachable_pub)]
+pub mod bai;
+#[allow(clippy::pedantic, missing_debug_implementations, unreachable_pub)]
+pub mod fs;
+#[allow(clippy::pedantic, missing_debug_implementations, unreachable_pub)]
+pub mod io;
+#[allow(clippy::pedantic, missing_debug_implementations, unreachable_pub)]
 pub mod record;
-pub mod seq;
+#[allow(clippy::pedantic, missing_debug_implementations, unreachable_pub)]
+mod record_ref;
 
-pub use aux::{Array, Fields, Tag, Value, Values};
-pub use batch::RecordBatch;
-pub use blocked::{BlockedScan, Segment, scan_records_blocked};
-pub use device::{DeviceColumns, DeviceRecordBatch, FieldBounds};
-pub use header::{Header, ReferenceSequence};
-pub use record::{RECORD_CORE_SIZE, Record, scan_records};
-pub use seq::{CigarOp, cigar_op_kind, cigar_op_len, decode_base};
-
-/// BAM magic: `BAM\1`.
-pub const MAGIC: [u8; 4] = *b"BAM\x01";
+pub use self::{record::Record, record_ref::RecordRef};

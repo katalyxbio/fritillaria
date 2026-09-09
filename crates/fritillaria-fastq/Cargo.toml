@@ -1,0 +1,39 @@
+[package]
+name = "fritillaria-fastq"
+version = "0.23.0"
+authors = ["Michael Macias <zaeleus@gmail.com>"]
+license = "MIT"
+edition.workspace = true
+rust-version.workspace = true
+description = "FASTQ format reader and writer"
+homepage = "https://github.com/zaeleus/noodles"
+repository = "https://github.com/zaeleus/noodles"
+documentation = "https://docs.rs/fritillaria-fastq"
+categories = ["parser-implementations", "science::bioinformatics"]
+
+[features]
+async = ["dep:futures", "dep:tokio"]
+
+[dependencies]
+bstr.workspace = true
+memchr.workspace = true
+
+futures = { workspace = true, optional = true, features = ["std"] }
+tokio = { workspace = true, optional = true, features = ["io-util"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["fs", "io-std", "macros", "rt-multi-thread"] }
+
+[lints.rust]
+missing_docs = "warn"
+
+[package.metadata.docs.rs]
+features = ["async"]
+
+[[example]]
+name = "fastq_count_async"
+required-features = ["async"]
+
+[[example]]
+name = "fastq_write_async"
+required-features = ["async"]

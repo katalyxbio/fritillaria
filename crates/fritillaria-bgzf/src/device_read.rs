@@ -146,7 +146,7 @@ impl<R: Read, C: DeviceBlockCodec> DeviceBgzfReader<R, C> {
     /// Reports that everything before `tail` was consumed.
     ///
     /// `tail` is an offset into the batch most recently returned — for BAM,
-    /// exactly what [`scan_records`](fritillaria_bam::scan_records) and
+    /// exactly what [`scan_records`](fritillaria_bam::columnar::scan_records) and
     /// `DeviceRecordBatch::tail` report. The block containing it, and every
     /// block after it, is re-inflated at the front of the next batch.
     ///

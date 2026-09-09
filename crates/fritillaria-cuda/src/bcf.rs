@@ -1,6 +1,6 @@
 //! BCF record boundary discovery on device.
 //!
-//! The CPU reference is `fritillaria_bcf::speculative` and the kernels are
+//! The CPU reference is `fritillaria_bcf::columnar::speculative` and the kernels are
 //! `kernels/bcf_scan.cu`; read the former for the correctness argument. This
 //! module is the launcher between them, and it is where the division of labour
 //! is decided.
@@ -87,8 +87,8 @@ impl BcfScanner {
     /// `contigs` come from the header and are what give the sieve its
     /// selectivity.
     ///
-    /// The result is always what [`fritillaria_bcf::scan_records`] would
-    /// produce; [`SpeculativeScan::proof`](fritillaria_bcf::SpeculativeScan)
+    /// The result is always what [`fritillaria_bcf::columnar::scan_records`] would
+    /// produce; [`SpeculativeScan::proof`](fritillaria_bcf::columnar::SpeculativeScan)
     /// says which route produced it, and a driver should count the fallbacks
     /// rather than assume there are none.
     pub fn scan(
@@ -97,7 +97,7 @@ impl BcfScanner {
         start: usize,
         samples: u32,
         contigs: u32,
-    ) -> Result<fritillaria_bcf::SpeculativeScan> {
+    ) -> Result<fritillaria_bcf::columnar::SpeculativeScan> {
         #[cfg(feature = "cuda")]
         {
             self.inner.scan(batch, start, samples, contigs)
@@ -119,7 +119,7 @@ mod cuda_impl {
     use cudarc::driver::{
         CudaContext as RawContext, CudaFunction, CudaSlice, CudaStream, LaunchConfig, PushKernelArg,
     };
-    use fritillaria_bcf::{Proof, SpeculativeScan};
+    use fritillaria_bcf::columnar::{Proof, SpeculativeScan};
     use fritillaria_core::{DeviceInflateBatch, Error, Result};
 
     use crate::backend::{CudaAlloc, driver_err, load_kernel};

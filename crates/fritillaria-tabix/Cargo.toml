@@ -1,0 +1,47 @@
+[package]
+name = "fritillaria-tabix"
+version = "0.67.0"
+authors = ["Michael Macias <zaeleus@gmail.com>"]
+license = "MIT"
+edition.workspace = true
+rust-version.workspace = true
+description = "Tabix (TBI) format reader and writer"
+homepage = "https://github.com/zaeleus/noodles"
+repository = "https://github.com/zaeleus/noodles"
+documentation = "https://docs.rs/fritillaria-tabix"
+categories = ["parser-implementations", "science::bioinformatics"]
+
+[features]
+async = ["dep:tokio", "fritillaria-bgzf/async"]
+
+[dependencies]
+bstr.workspace = true
+indexmap.workspace = true
+fritillaria-bgzf = { path = "../fritillaria-bgzf", version = "0.51.0" }
+fritillaria-core = { path = "../fritillaria-core", version = "0.20.0" }
+fritillaria-csi = { path = "../fritillaria-csi", version = "0.61.0" }
+
+tokio = { workspace = true, optional = true, features = ["fs", "io-util"] }
+
+[dev-dependencies]
+bstr.workspace = true
+futures = { workspace = true, features = ["std"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints.rust]
+missing_docs = "warn"
+
+[package.metadata.docs.rs]
+features = ["async"]
+
+[[example]]
+name = "tabix_list_reference_sequence_names_async"
+required-features = ["async"]
+
+[[example]]
+name = "tabix_query_generic_async"
+required-features = ["async", "fritillaria-csi/async"]
+
+[[example]]
+name = "tabix_read_header_async"
+required-features = ["async"]

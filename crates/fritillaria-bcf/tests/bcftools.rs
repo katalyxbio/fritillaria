@@ -35,7 +35,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use fritillaria_bcf::{
+use fritillaria_bcf::columnar::{
     Int, Kind, Proof, decode_genotype, header::parse_header, record::Record, scan_records,
     scan_records_speculative,
 };
@@ -272,7 +272,7 @@ fn the_dictionary_resolves_keys_bcftools_reports_by_name() {
             .map(|v| {
                 v.floats()
                     .unwrap()
-                    .filter_map(fritillaria_bcf::Float::value)
+                    .filter_map(fritillaria_bcf::columnar::Float::value)
                     .collect()
             })
             .unwrap_or_default();
@@ -296,7 +296,7 @@ fn the_dictionary_resolves_keys_bcftools_reports_by_name() {
 /// Resolving by name is the point: a test that hardcoded the number would pass
 /// against a dictionary numbered wrongly, which is exactly the failure the
 /// fixtures exist to catch.
-fn key(header: &fritillaria_bcf::Header, name: &[u8]) -> i32 {
+fn key(header: &fritillaria_bcf::columnar::Header, name: &[u8]) -> i32 {
     let index = header
         .dictionary
         .strings
@@ -447,7 +447,7 @@ fn sites_match_bcftools_query() {
 }
 
 /// Renders one sample's genotype the way `bcftools query %GT` does.
-fn render_genotype(alleles: &[fritillaria_bcf::Allele]) -> String {
+fn render_genotype(alleles: &[fritillaria_bcf::columnar::Allele]) -> String {
     let mut out = String::new();
     for (i, allele) in alleles.iter().enumerate() {
         if i > 0 {

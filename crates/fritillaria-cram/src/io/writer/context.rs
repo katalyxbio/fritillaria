@@ -1,0 +1,28 @@
+use fritillaria_fasta as fasta;
+
+use crate::{container::BlockContentEncoderMap, file_definition::Version};
+
+const DEFAULT_RECORDS_PER_SLICE: usize = 10240;
+
+#[derive(Clone, Debug)]
+pub struct Context {
+    pub reference_sequence_repository: fasta::Repository,
+    pub records_per_slice: usize,
+    pub preserve_read_names: bool,
+    pub encode_alignment_start_positions_as_deltas: bool,
+    pub version: Version,
+    pub block_content_encoder_map: BlockContentEncoderMap,
+}
+
+impl Default for Context {
+    fn default() -> Self {
+        Self {
+            reference_sequence_repository: fasta::Repository::default(),
+            records_per_slice: DEFAULT_RECORDS_PER_SLICE,
+            preserve_read_names: true,
+            encode_alignment_start_positions_as_deltas: true,
+            version: Version::default(),
+            block_content_encoder_map: BlockContentEncoderMap::default(),
+        }
+    }
+}
