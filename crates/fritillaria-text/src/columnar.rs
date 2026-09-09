@@ -94,6 +94,7 @@ fn malformed(position: usize, reason: impl Into<String>) -> Error {
 ///
 /// Blank lines are skipped rather than reported: they carry no record and no
 /// header, and every one of these formats tolerates them.
+#[must_use]
 pub fn scan_lines(
     buf: &[u8],
     start: usize,
