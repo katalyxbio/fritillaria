@@ -242,7 +242,7 @@ fn the_sam_fixture_still_contains_the_quote_bytes_that_misled_the_first_scan() {
         .map(|i| {
             batch
                 .record(&buf, i)
-                .map_or(0, |r| r.iter().filter(|&&b| b == b'"').count())
+                .map_or(0, |r| memchr::memchr_iter(b'"', r).count())
         })
         .sum();
     assert!(

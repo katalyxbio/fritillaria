@@ -12,6 +12,7 @@ fritillaria-core.workspace = true
 memchr.workspace = true
 
 [dev-dependencies]
+memchr.workspace = true
 fritillaria-core = { workspace = true, features = ["testing"] }
 # The oracles: independently written parsers for the same three files.
 fritillaria-gff.workspace = true
