@@ -243,4 +243,9 @@ See [CLAUDE.md](CLAUDE.md) for architecture, format invariants, and the remote-G
 
 ## License
 
-MIT OR Apache-2.0
+[Apache License 2.0](LICENSE).
+
+Note that the `nvcomp` feature dlopens NVIDIA's nvCOMP at runtime; it is proprietary, licensed
+separately under NVIDIA's own terms, and is neither vendored nor redistributed here. Building or
+using that feature means obtaining nvCOMP yourself. Every other path — including the CUDA
+fallback codec — is Apache-2.0 all the way down.
