@@ -37,7 +37,7 @@ pub mod nvcomp;
 
 #[cfg(feature = "cuda")]
 pub use backend::{CudaAlloc, CudaContext, InflateTimings};
-pub use bam::BamDecoder;
+pub use bam::{BamDecoder, DecodeTimings};
 
 #[cfg(feature = "nvcomp")]
 pub use nvcomp::{NvcompCodec, NvcompContext};

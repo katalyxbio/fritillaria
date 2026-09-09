@@ -21,8 +21,8 @@ where PCIe carries compressed bytes instead of decompressed ones — a 3.37x red
 traffic on real WGS data. See *Performance*.
 
 > **Early, and honest about it.** A BAM file goes in and device-resident columns come out,
-> verified against htslib-written files on a real GPU. What is missing is a measurement: every
-> performance figure below stops at decompression.
+> verified against htslib-written files on a real GPU and measured end to end. Breadth is the
+> gap: only BAM is implemented, and the formats below it are a roadmap, not a promise.
 
 ## Which inputs get the GPU
 
@@ -128,33 +128,52 @@ than optimising it.
 
 ### Time to records in device memory — the comparison that matters
 
-If the consumer is a GPU kernel, the CPU path is not finished when it finishes decompressing:
-it still has to upload 10.11 GiB. Upload figures use our own measured H2D rate of 3.48 GiB/s;
-"pipelined" is the max of the two phases, which is the fair reading for both sides.
+Measured end to end on the same L4 and the same file: a BAM on disk in, **29,887,809 parsed
+records in device columns** out. This is the shipping path — `DeviceBgzfReader` feeding
+`BamDecoder` — not a rig, and nothing returns to the host but the BAM header.
 
-| Path | Work | Pipelined |
+| Path | Produces | Wall |
 |---|---|---|
-| `bgzip -@11` → H2D | decompress 3.48s, upload 10.11 GiB (2.90s) | **3.48s** |
-| fritillaria, our kernel | upload 0.86s, inflate 4.68s | 4.68s |
-| **fritillaria + nvCOMP** | upload 0.89s, inflate 0.86s | **0.89s** |
+| **fritillaria + nvCOMP** | 29.9M **parsed records**, columnar, in VRAM | **2.812s** |
+| `bgzip -d -@11` | unparsed **bytes** in host RAM | 4.00s |
+| `bgzip -@11` then upload | unparsed bytes in VRAM | 4.00s pipelined / 6.97s sequential |
 
-**3.9x ahead of a 12-core htslib on the metric that matters for a GPU consumer.**
+**About 1.4x on wall clock against a 12-core htslib — while delivering something it has not
+produced at all.** The CPU path ends with raw bytes and still has every record to parse.
+
+Two things the breakdown shows, both of which the design was betting on without evidence until
+now:
+
+- **Turning bytes into records costs ~7% of the run** — 0.188s against 2.625s of getting the
+  bytes there. Decoding on the device is close to free next to moving the data.
+- **Batch size barely matters** between 256 and 4096 blocks. The serial reconcile step in the
+  boundary scan measures 222 ns per block, or 37 ms across the whole file, so the phase that
+  looked most likely to disappoint does not.
 
 The structural point is the durable one: **PCIe carries compressed bytes instead of decompressed
 ones, so the compression ratio becomes an effective bandwidth multiplier on the link** — 3.37x
 fewer bytes on real WGS. That does not depend on any codec being good and does not go away on
 better hardware. The host also never has to hold the 10.11 GiB at all.
 
+> An earlier version of this table read **3.9x**. That number was inflate-only: it decoded no
+> records and excluded host-side block discovery, so it was not the metric it was labelled with.
+> 1.4x is the measured figure and it supersedes it.
+
 ### As a standalone decompressor, htslib still wins
 
-Same machine, same run, same file. `bgzip -d` on 11 threads does the job in **3.48s**; getting
-our output back into host RAM means paying the device-to-host copy this whole design exists to
-delete, which puts the GPU path behind it.
+Same machine, same file. `bgzip -d` on 11 threads does the job in 3.5-4.0s; getting our output
+back into host RAM means paying the device-to-host copy this whole design exists to delete,
+which puts the GPU path behind it.
 
-| | wall | MiB/s of compressed input |
-|---|---|---|
-| `bgzip -d -@ 1` | 24.24s | 127 |
-| **`bgzip -d -@ 11`** | **3.48s** | **882** |
+| | wall | MiB/s of compressed input | htslib |
+|---|---|---|---|
+| `bgzip -d -@ 1` | 24.24s | 127 | 1.16 |
+| **`bgzip -d -@ 11`** | **3.48s** | **882** | 1.16 |
+| `bgzip -d -@ 11` | 4.00s | 768 | 1.13 |
+
+The two `-@ 11` rows are the same command on different VM images, and the spread is why only
+same-run comparisons are used above. nvCOMP's inflate reproduced exactly across those runs
+(1.754s both times), so the variance is in the baseline, not in us.
 
 So there are two different numbers here and they answer different questions. If you want bytes
 in host memory, use htslib. If you want records in device memory, that is what this is for.
@@ -169,8 +188,8 @@ toward the codec. The 3.37x ratio advantage is invariant.
 Decompression is the on-ramp, not the product — and with inflate now balanced against the
 upload, further codec work buys little. The effort belongs downstream of it:
 
-1. **Measuring it.** Every number in this README stops at decompression. There is no figure yet
-   for time-to-*records*-in-device-memory, which is the metric the design is argued on.
+1. **Host-side block discovery**, which is now the likely bottleneck: a sequential walk of BGZF
+   headers that measures 2.36s standalone against 0.86s of GPU inflate.
 2. **BCF and `bgzip`ped VCF**, which should be close to free through the noodles seam, then
    `bgzip`ped FASTQ.
 3. **GPU-side BGZF compression**, so a tool that produces records on-device can write them back

@@ -27,6 +27,8 @@
 //! not an error. See [`fritillaria_bam::device`] for why pointing at resident
 //! bytes beats copying them.
 
+use std::time::Duration;
+
 use fritillaria_bam::device::DeviceRecordBatch;
 use fritillaria_core::{DeviceInflateBatch, Result};
 // Only the stub path constructs an error here; with `cuda` on, every error
@@ -41,6 +43,60 @@ fn status_message(status: u64) -> &'static str {
     match status {
         1 => "malformed record reached from a confirmed boundary",
         _ => "unknown device error",
+    }
+}
+
+/// Where time goes inside a decode, phase by phase.
+///
+/// Same caveat as [`InflateTimings`](crate::InflateTimings): attributing phases
+/// means synchronising between them, which removes overlap a pipelined
+/// implementation would get. The sum is an upper bound on wall clock, not a
+/// measurement of it.
+///
+/// `reconcile` is the one to watch. It is a single GPU thread walking the true
+/// record chain over *blocks*, so it scales with the block count rather than
+/// the record count — irrelevant at a few hundred blocks per batch, and the
+/// first thing to check if whole-file batches ever get used.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DecodeTimings {
+    /// Uploading block starts and allocating the per-block scratch arrays.
+    pub setup: Duration,
+    /// Phase 1: speculative walks, one thread per block.
+    pub scan: Duration,
+    /// Phase 2: the serial reconcile, one thread over blocks.
+    pub reconcile: Duration,
+    /// Downloading the three totals — the one host synchronisation.
+    pub totals: Duration,
+    /// Phase 3: emitting record offsets, one thread per block.
+    pub emit: Duration,
+    /// Phase 4: field decode, one thread per record.
+    pub decode: Duration,
+
+    pub batches: u64,
+    pub blocks: u64,
+    pub records: u64,
+    pub bytes: u64,
+}
+
+impl DecodeTimings {
+    /// Folds another batch's timings into this one.
+    pub fn accumulate(&mut self, other: &Self) {
+        self.setup += other.setup;
+        self.scan += other.scan;
+        self.reconcile += other.reconcile;
+        self.totals += other.totals;
+        self.emit += other.emit;
+        self.decode += other.decode;
+        self.batches += other.batches;
+        self.blocks += other.blocks;
+        self.records += other.records;
+        self.bytes += other.bytes;
+    }
+
+    /// Sum of the measured phases.
+    #[must_use]
+    pub fn total(&self) -> Duration {
+        self.setup + self.scan + self.reconcile + self.totals + self.emit + self.decode
     }
 }
 
@@ -103,13 +159,26 @@ impl BamDecoder {
     /// The columns borrow `batch` in every sense but the type system's: it must
     /// outlive the result. See the module docs.
     pub fn decode(&self, batch: &DeviceInflateBatch, start: usize) -> Result<DeviceRecordBatch> {
+        self.decode_timed(batch, start, &mut DecodeTimings::default())
+    }
+
+    /// [`decode`](Self::decode), recording where the time went.
+    ///
+    /// Synchronises between phases to attribute them, so this is slower than
+    /// [`decode`](Self::decode) and its total is an upper bound on wall clock.
+    pub fn decode_timed(
+        &self,
+        batch: &DeviceInflateBatch,
+        start: usize,
+        timings: &mut DecodeTimings,
+    ) -> Result<DeviceRecordBatch> {
         #[cfg(feature = "cuda")]
         {
-            self.inner.decode(batch, start)
+            self.inner.decode(batch, start, timings)
         }
         #[cfg(not(feature = "cuda"))]
         {
-            let _ = (batch, start);
+            let _ = (batch, start, timings);
             Err(Error::CudaUnavailable(
                 "built without the `cuda` feature".to_string(),
             ))
@@ -120,6 +189,7 @@ impl BamDecoder {
 #[cfg(feature = "cuda")]
 mod cuda_impl {
     use std::sync::Arc;
+    use std::time::Instant;
 
     use cudarc::driver::{
         CudaContext as RawContext, CudaFunction, CudaSlice, CudaStream, LaunchConfig, PushKernelArg,
@@ -127,7 +197,7 @@ mod cuda_impl {
     use fritillaria_bam::device::{DeviceColumns, DeviceRecordBatch};
     use fritillaria_core::{DeviceAlloc, DeviceBuffer, DeviceInflateBatch, Error, Result};
 
-    use super::status_message;
+    use super::{DecodeTimings, status_message};
     use crate::backend::{CudaAlloc, driver_err, load_kernel};
 
     const BLOCK_DIM: u32 = 256;
@@ -221,6 +291,17 @@ mod cuda_impl {
                 .map_err(driver_err("allocating column"))
         }
 
+        /// Blocks until queued work finishes.
+        ///
+        /// Only for phase attribution: launches are asynchronous, so without
+        /// this every phase would be charged to whichever one synchronises
+        /// next. It is why `decode_timed` is slower than `decode`.
+        fn sync(&self) -> Result<()> {
+            self.stream
+                .synchronize()
+                .map_err(driver_err("synchronising between decode phases"))
+        }
+
         /// Wraps a device slice as an owning column of `bytes` logical bytes.
         ///
         /// Each column carries its own completion event, all recorded after the
@@ -244,6 +325,7 @@ mod cuda_impl {
             &self,
             batch: &DeviceInflateBatch,
             start: usize,
+            timings: &mut DecodeTimings,
         ) -> Result<DeviceRecordBatch> {
             let Some(data) = batch.data() else {
                 return self.empty(start);
@@ -270,8 +352,13 @@ mod cuda_impl {
                 return self.empty(start);
             }
 
-            let bounds = self.boundaries(alloc, len, batch, start)?;
-            let columns = self.decode_fields(alloc, bounds)?;
+            timings.batches += 1;
+            timings.blocks += batch.len() as u64;
+            timings.bytes += len as u64;
+
+            let bounds = self.boundaries(alloc, len, batch, start, timings)?;
+            timings.records += bounds.n_records as u64;
+            let columns = self.decode_fields(alloc, bounds, timings)?;
             DeviceRecordBatch::new(columns.0, columns.1, columns.2)
         }
 
@@ -284,7 +371,9 @@ mod cuda_impl {
             len: usize,
             batch: &DeviceInflateBatch,
             start: usize,
+            timings: &mut DecodeTimings,
         ) -> Result<Boundaries> {
+            let phase = Instant::now();
             let n_blocks = batch.len();
             let n_blocks_arg = i32::try_from(n_blocks)
                 .map_err(|_| Error::Cuda(format!("{n_blocks} blocks exceeds i32")))?;
@@ -302,6 +391,9 @@ mod cuda_impl {
             let mut spec_lands = self.alloc(n_blocks, 8)?;
             let mut spec_complete = self.alloc(n_blocks, 1)?;
             let mut spec_valid = self.alloc(n_blocks, 1)?;
+            self.sync()?;
+            timings.setup += phase.elapsed();
+            let phase = Instant::now();
 
             let mut builder = self.stream.launch_builder(&self.scan);
             builder
@@ -319,6 +411,9 @@ mod cuda_impl {
             // own element of the four output arrays.
             unsafe { builder.launch(grid(n_blocks)) }
                 .map_err(driver_err("launching bam_scan_blocks"))?;
+            self.sync()?;
+            timings.scan += phase.elapsed();
+            let phase = Instant::now();
 
             // Phase 2: reconcile, one thread walking the true chain over blocks.
             let mut entries = self.alloc(n_blocks, 8)?;
@@ -345,6 +440,9 @@ mod cuda_impl {
             // plus three totals, and its walk is bounds-checked against `len`
             // at every step.
             unsafe { builder.launch(SINGLE) }.map_err(driver_err("launching bam_reconcile"))?;
+            self.sync()?;
+            timings.reconcile += phase.elapsed();
+            let phase = Instant::now();
 
             // The one genuine host synchronisation: the record count decides
             // how much to allocate next, so it cannot be deferred. Three words.
@@ -367,6 +465,8 @@ mod cuda_impl {
                 .map_err(|_| Error::Cuda("record count exceeds usize".to_string()))?;
             let tail = usize::try_from(tail)
                 .map_err(|_| Error::Cuda("tail offset exceeds usize".to_string()))?;
+            timings.totals += phase.elapsed();
+            let phase = Instant::now();
 
             // Phase 3: emit offsets, one thread per block.
             let mut record_offsets = self.alloc(n_records, 8)?;
@@ -384,6 +484,8 @@ mod cuda_impl {
             // overlap. Both were produced by the reconcile kernel above.
             unsafe { builder.launch(grid(n_blocks)) }
                 .map_err(driver_err("launching bam_emit_offsets"))?;
+            self.sync()?;
+            timings.emit += phase.elapsed();
 
             Ok(Boundaries {
                 record_offsets,
@@ -400,7 +502,9 @@ mod cuda_impl {
             &self,
             alloc: &CudaAlloc,
             bounds: Boundaries,
+            timings: &mut DecodeTimings,
         ) -> Result<(usize, usize, DeviceColumns)> {
+            let phase = Instant::now();
             let Boundaries {
                 record_offsets,
                 n_records: n,
@@ -447,6 +551,8 @@ mod cuda_impl {
             // emit kernel on this same stream.
             unsafe { builder.launch(grid(n)) }
                 .map_err(driver_err("launching bam_decode_fields"))?;
+            self.sync()?;
+            timings.decode += phase.elapsed();
 
             let columns = DeviceColumns {
                 reference_sequence_id: self.column(reference_sequence_id, n * 4)?,

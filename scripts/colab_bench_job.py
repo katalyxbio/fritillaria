@@ -213,13 +213,23 @@ def main():
 
         # Release profile: a debug-build inflate benchmark measures nothing.
         run(f"cargo build --release --features {features} -p fritillaria-cuda "
-            "--example bench_inflate")
+            "--example bench_inflate --example bench_decode")
 
         print("\n" + "=" * 68, flush=True)
-        print("FRITILLARIA (GPU)", flush=True)
+        print("FRITILLARIA (GPU) — decompression only", flush=True)
         print("=" * 68, flush=True)
         run(f"cargo run --release --quiet --features {features} -p fritillaria-cuda "
             f"--example bench_inflate -- {BAM_PATH} 64")
+
+        # The metric the design is actually argued on. Kept separate from the
+        # inflate benchmark rather than folded into it, because the two answer
+        # different questions and quoting one as the other is the mistake this
+        # project keeps warning itself about.
+        print("\n" + "=" * 68, flush=True)
+        print("FRITILLARIA (GPU) — time to RECORDS in device memory", flush=True)
+        print("=" * 68, flush=True)
+        run(f"cargo run --release --quiet --features {features} -p fritillaria-cuda "
+            f"--example bench_decode -- {BAM_PATH}")
 
     print("\n" + "=" * 68, flush=True)
     print("HTSLIB BASELINE (bgzip -d: same workload, same file, same machine)", flush=True)
