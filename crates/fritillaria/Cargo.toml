@@ -1,0 +1,27 @@
+[package]
+name = "fritillaria"
+description = "GPU-accelerated compression and parsing of gzipped genomic files."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+# Requires a CUDA driver at runtime. Off by default so the crate builds and
+# tests on machines with no GPU.
+cuda = ["fritillaria-cuda/cuda"]
+# NVIDIA's nvCOMP as the preferred GPU codec. Implies `cuda`. The library is
+# dlopened at runtime, so enabling this does not require nvCOMP at build time,
+# and `select_codec` falls back to our own kernel when it is not installed.
+nvcomp = ["cuda", "fritillaria-cuda/nvcomp"]
+
+[dependencies]
+fritillaria-core.workspace = true
+fritillaria-bgzf.workspace = true
+fritillaria-bam.workspace = true
+fritillaria-cuda.workspace = true
+
+[lints]
+workspace = true

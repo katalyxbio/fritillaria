@@ -1,0 +1,36 @@
+[package]
+name = "fritillaria-bgzf"
+description = "BGZF block discovery, CPU reference codec, and writer."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+# Implements the noodles BGZF reader traits, so every noodles format crate
+# (bam, bcf, vcf, tabix, csi) can sit on top of this reader unchanged.
+noodles = ["dep:noodles-bgzf"]
+# A host-memory DeviceBlockCodec, so the device-resident seam is exercisable
+# without a GPU. Scaffolding for tests in this and downstream crates.
+testing = ["fritillaria-core/testing"]
+
+[dependencies]
+fritillaria-core.workspace = true
+noodles-bgzf = { workspace = true, optional = true }
+crc32fast.workspace = true
+miniz_oxide.workspace = true
+
+[dev-dependencies]
+# The device stand-ins are behind a feature in core; this crate's own tests
+# need them, and a dev-dependency is how they get turned on for `cargo test`
+# without leaking scaffolding into a normal build.
+fritillaria-core = { workspace = true, features = ["testing"] }
+# Proves noodles format crates compose on top of our reader; see
+# tests/noodles_interop.rs. Dev-only: the library itself needs only bgzf.
+noodles-bam.workspace = true
+noodles-sam.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,18 @@
+[package]
+name = "fritillaria-bam"
+description = "BAM header parsing, record boundary discovery, and columnar decoding."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+fritillaria-core.workspace = true
+
+[dev-dependencies]
+# Needed to decompress the committed htslib fixtures in tests/htslib.rs.
+fritillaria-bgzf.workspace = true
+
+[lints]
+workspace = true

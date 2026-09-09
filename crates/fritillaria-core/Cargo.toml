@@ -1,0 +1,19 @@
+[package]
+name = "fritillaria-core"
+description = "Shared types and backend traits for fritillaria."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+# Host-memory stand-ins for device memory, so the device-resident design is
+# testable on a machine with no GPU. Scaffolding: not on by default.
+testing = []
+
+[dependencies]
+thiserror.workspace = true
+
+[lints]
+workspace = true

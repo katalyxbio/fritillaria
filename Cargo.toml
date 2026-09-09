@@ -1,0 +1,63 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/fritillaria",
+    "crates/fritillaria-core",
+    "crates/fritillaria-bgzf",
+    "crates/fritillaria-bam",
+    "crates/fritillaria-cuda",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.94"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/alessandrogiannini/fritillaria"
+
+[workspace.dependencies]
+fritillaria-core = { path = "crates/fritillaria-core", version = "0.0.0" }
+fritillaria-bgzf = { path = "crates/fritillaria-bgzf", version = "0.0.0" }
+fritillaria-bam = { path = "crates/fritillaria-bam", version = "0.0.0" }
+fritillaria-cuda = { path = "crates/fritillaria-cuda", version = "0.0.0" }
+
+crc32fast = "1.5.1"
+# nvCOMP is dlopened at runtime rather than linked, so the workspace still
+# builds with `--features nvcomp` on a machine that has no nvCOMP installed —
+# the same discipline cudarc's `dynamic-loading` gives us for libcuda.
+libloading = "0.9.0"
+noodles-bgzf = "0.51.0"
+noodles-bam = "0.95.0"
+noodles-sam = "0.90.0"
+miniz_oxide = "0.9.1"
+thiserror = "2.0.20"
+
+# Pinned to the CUDA version on the verified Colab image (12.8). `dynamic-loading`
+# dlopens libcuda at runtime, so this crate compiles on machines with no CUDA install.
+cudarc = { version = "0.19.9", default-features = false, features = [
+    "driver",
+    "nvrtc",
+    "std",
+    "dynamic-loading",
+    "cuda-12080",
+] }
+
+[workspace.lints.rust]
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+# The format code is full of intentional casts between integer widths; the spec
+# defines exact widths and we check ranges explicitly where it matters.
+cast_possible_truncation = "allow"
+doc_markdown = "allow"
+missing_errors_doc = "allow"
+module_name_repetitions = "allow"
+pedantic = { level = "warn", priority = -1 }
+
+[profile.bench]
+debug = true
+
+[profile.release]
+codegen-units = 1
+lto = "thin"

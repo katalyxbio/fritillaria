@@ -1,0 +1,40 @@
+[package]
+name = "fritillaria-cuda"
+description = "CUDA backend for fritillaria, with kernels compiled at runtime by NVRTC."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+# Off by default so `cargo build` works with no CUDA toolkit and no device.
+# With it off this crate still compiles, and every entry point reports the
+# backend as unavailable rather than failing to build.
+cuda = ["dep:cudarc"]
+# NVIDIA's nvCOMP as the GPU codec. Off by default and additive: it needs
+# `cuda` for context, streams and allocation, and it is a proprietary NVIDIA
+# binary the user supplies rather than something we redistribute.
+#
+# The library is dlopened at runtime, so enabling this feature does **not**
+# require nvCOMP to be present at build time — `cargo build --features nvcomp`
+# works on a machine with no CUDA toolkit and no nvCOMP.
+nvcomp = ["cuda", "dep:libloading"]
+
+[dependencies]
+fritillaria-core.workspace = true
+cudarc = { workspace = true, optional = true }
+libloading = { workspace = true, optional = true }
+
+[dev-dependencies]
+# The oracles the kernels are diffed against in tests/. No cycle: neither
+# depends on this crate.
+crc32fast.workspace = true
+# `noodles` feature enabled here so tests/end_to_end.rs can stack noodles-bam
+# on a GPU-backed reader — the full-stack proof.
+fritillaria-bgzf = { workspace = true, features = ["noodles"] }
+noodles-bam.workspace = true
+
+[lints]
+workspace = true

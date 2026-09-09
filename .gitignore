@@ -1,0 +1,13 @@
+/target
+**/*.rs.bk
+*.pdb
+
+# NVRTC caches compiled kernels here; regenerable, never commit.
+/.nvrtc-cache
+
+# Large generated fixtures. Small committed fixtures live in testdata/ and are
+# tracked deliberately — see CLAUDE.md.
+/testdata/generated
+
+# Left behind when the remote job scripts are imported for local testing.
+__pycache__/
