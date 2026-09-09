@@ -20,9 +20,9 @@ a GPU consumer needs them. The comparison that matters is *time to records in de
 where PCIe carries compressed bytes instead of decompressed ones — a 3.37x reduction in link
 traffic on real WGS data. See *Performance*.
 
-> **Early, and honest about it.** GPU decompression runs end to end, output stays on the device,
-> and records decode into device-resident columns — all verified against htslib-written files on
-> a real GPU. What is missing is the reader that drives successive batches through it.
+> **Early, and honest about it.** A BAM file goes in and device-resident columns come out,
+> verified against htslib-written files on a real GPU. What is missing is a measurement: every
+> performance figure below stops at decompression.
 
 ## Which inputs get the GPU
 
@@ -66,7 +66,7 @@ carry-the-partial-record loop a real consumer has to write.
 | Crate | What works |
 |---|---|
 | `fritillaria-core` | Types, errors, `VirtualOffset`, the `BlockCodec` and `DeviceBlockCodec` seams |
-| `fritillaria-bgzf` | Block discovery, CPU codec, writer, batched `BgzfReader` |
+| `fritillaria-bgzf` | Block discovery, CPU codec, writer, batched `BgzfReader`, device-resident `DeviceBgzfReader` |
 | `fritillaria-bam` | Header, record boundary scan, columnar `RecordBatch`, zero-copy `Record`, aux tags, device columns |
 | `fritillaria-cuda` | DEFLATE inflate + CRC32 kernels, device-resident output, nvCOMP codec, columnar BAM decode — verified on a Tesla T4 |
 | `fritillaria` | Facade and backend selection (nvCOMP → our kernel → CPU) |
@@ -169,8 +169,8 @@ toward the codec. The 3.37x ratio advantage is invariant.
 Decompression is the on-ramp, not the product — and with inflate now balanced against the
 upload, further codec work buys little. The effort belongs downstream of it:
 
-1. **A device-side reader**, driving successive batches through the decoder and carrying a
-   partial record forward. The decode itself is done; this is the plumbing around it.
+1. **Measuring it.** Every number in this README stops at decompression. There is no figure yet
+   for time-to-*records*-in-device-memory, which is the metric the design is argued on.
 2. **BCF and `bgzip`ped VCF**, which should be close to free through the noodles seam, then
    `bgzip`ped FASTQ.
 3. **GPU-side BGZF compression**, so a tool that produces records on-device can write them back

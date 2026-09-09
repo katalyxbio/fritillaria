@@ -16,6 +16,7 @@
 
 pub mod block;
 pub mod cpu;
+pub mod device_read;
 pub mod discover;
 #[cfg(any(test, feature = "testing"))]
 pub mod host_device;
@@ -24,6 +25,7 @@ pub mod write;
 
 pub use block::{BlockHeader, EOF_BLOCK, is_eof_block};
 pub use cpu::CpuCodec;
+pub use device_read::{DeviceBatch, DeviceBgzfReader};
 pub use discover::{BlockDiscovery, discover_blocks};
 #[cfg(any(test, feature = "testing"))]
 pub use host_device::HostDeviceCodec;

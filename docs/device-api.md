@@ -1,6 +1,6 @@
 # Device-resident API design
 
-**Status:** written 2026-09-08. **Steps 1-4 and 6 are done.** The core vocabulary (`DeviceAlloc`,
+**Status:** written 2026-09-08. **All six steps are done.** The core vocabulary (`DeviceAlloc`,
 `DeviceBuffer`, `DeviceInflateBatch`, `DeviceBlockCodec`) is in `fritillaria-core::device`, with
 host-memory stand-ins behind a `testing` feature and a `HostDeviceCodec` in `fritillaria-bgzf`;
 `CudaCodec` implements `DeviceBlockCodec` over the existing kernel and takes a caller-supplied
@@ -407,11 +407,21 @@ Each step is independently testable.
    coalesced — and is skipped entirely when a batch already satisfies the requirement. Doing
    this on the host instead would mean a memcpy of the whole compressed batch through host
    memory; on the device it runs at VRAM bandwidth over data already there.
-5. `DeviceBgzfReader`, driving successive batches and carrying the partial record forward.
-   **Not started, and now the gap.** Step 6 landed first because the boundary scan turned out to
-   be solvable on the device, which was the open question; the reader is ordinary plumbing on
-   top. The loop it needs is written and tested on the host in
-   `fritillaria-bam/tests/ont.rs::driver_carries_a_record_across_batch_edges`.
+5. ~~`DeviceBgzfReader`, driving successive batches and carrying the partial record forward.~~
+   **Done, verified on a T4.** Landed after step 6, because the boundary scan was the open
+   question and this is plumbing on top of the answer.
+
+   The design note worth keeping: **the carry moves compressed blocks, not decompressed bytes.**
+   Given the caller's tail offset the reader re-inflates the block containing it and everything
+   after, at the front of the next batch. No device-to-device copy, no second buffer; the
+   overlap is bounded by one record. The same mechanism makes a record larger than a batch
+   resolve itself, since each round prepends the carry and appends a fresh read until the window
+   is big enough.
+
+   `next_batch` yields an **owned** `DeviceInflateBatch`. Lending one and reusing it would free
+   the bytes columns point into while a consumer was still reading them; handing it over makes
+   that lifetime the borrow checker's business. The cost is an allocation per batch, which is
+   the right trade against a silent-corruption failure mode.
 6. ~~`DeviceRecordBatch::decode` as a kernel, differential-tested against `RecordBatch::decode`.~~
    **Done, verified on a T4.** Four kernels — speculate per block, reconcile the true chain,
    emit offsets, decode fields — in `kernels/bam_decode.cu`, launched by

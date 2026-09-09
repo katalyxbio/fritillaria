@@ -323,6 +323,33 @@ pub trait DeviceBlockCodec {
     ) -> Result<()>;
 }
 
+/// A shared reference to a codec is itself a codec.
+///
+/// Building a codec compiles kernels and pins a device context, so it is
+/// expensive and deliberately not `Clone`. Without this, a caller driving
+/// several readers — different files, or the same file at different batch
+/// sizes — would have to build one codec each. The alternative was making every
+/// reader generic over ownership, which pushes the same problem onto every
+/// caller instead of solving it once.
+impl<C: DeviceBlockCodec + ?Sized> DeviceBlockCodec for &C {
+    fn name(&self) -> &'static str {
+        (**self).name()
+    }
+
+    fn device_ordinal(&self) -> i32 {
+        (**self).device_ordinal()
+    }
+
+    fn inflate_batch_device(
+        &self,
+        batch: &[u8],
+        spans: &[BlockSpan],
+        out: &mut DeviceInflateBatch,
+    ) -> Result<()> {
+        (**self).inflate_batch_device(batch, spans, out)
+    }
+}
+
 /// A host-memory stand-in for device memory.
 ///
 /// This is what makes the device design testable on a machine with no GPU —
