@@ -62,14 +62,38 @@ appears. It does appear:
 **83 quality lines begin with `@`** — the exact decoy the validator exists to
 reject — and 13,159 `@` bytes sit inside quality lines. All rejected.
 
-**Why they are rejected, and it is structural.** Take a decoy `@` inside a
-quality line. Line 1 is the rest of that quality line, line 2 is the next
-record's `@name` line, and line 3 is the next record's *sequence*. The check
-requires line 3 to start with `+`. A sequence line never does — it is
-`ACGTN`. Across all three fixtures, **0 sequence lines start with `+`**.
+**Why they are rejected.** Take a decoy `@` inside a quality line. Line 1 is the
+rest of that quality line, line 2 is the next record's `@name` line, and line 3
+is the next record's *sequence*. The check requires line 3 to start with `+`, and
+a sequence line never does — across all three fixtures, **0 sequence lines start
+with `+`**.
 
-So the `+` on line 3 does essentially all of the work, and the length check is
-a second line of defence rather than the primary one.
+### Which check is load-bearing — corrected 2026-09-09
+
+**This section previously said the `+` check "does essentially all of the work".
+That was an inference, and mutation testing showed it is wrong on real data.**
+
+Deleting the `+` check entirely passed every test in the crate, including the
+differential run against noodles' own parser over all three fixtures. The reason
+is that the **length** check catches the same decoys: for a decoy at a quality
+line, line 2 is the next record's *name* line and line 4 is its `+` line, and
+those two rarely have the same length. The `+` check never got to prove itself.
+
+Both checks are needed, and they cover different cases:
+
+| Check | Rejects |
+|---|---|
+| `len(line 2) == len(line 4)` | every decoy in the committed fixtures |
+| line 3 starts with `+` | decoys where those lengths happen to coincide |
+
+`only_the_plus_check_rejects_a_length_matched_decoy` constructs the second case
+by hand — a record whose name line and `+` line are both 3 bytes — because real
+data does not supply one and a check nothing exercises is a check nothing
+protects.
+
+The general lesson, and it is the same one the BCF work recorded: **a validator
+with several conditions needs a case per condition.** Measuring that the whole
+thing admits nothing does not tell you which part is doing the admitting.
 
 ## What follows for the kernel
 

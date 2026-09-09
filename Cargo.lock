@@ -534,6 +534,8 @@ name = "fritillaria-fastq"
 version = "0.23.0"
 dependencies = [
  "bstr",
+ "fritillaria-bgzf",
+ "fritillaria-core",
  "futures",
  "memchr",
  "tokio",

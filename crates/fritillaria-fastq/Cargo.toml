@@ -2,7 +2,9 @@
 name = "fritillaria-fastq"
 version = "0.23.0"
 authors = ["Michael Macias <zaeleus@gmail.com>"]
-license = "MIT"
+# Mixed: `io`/`fai`/`fs`/`record`/`async` are vendored from noodles-fastq,
+# `columnar` is ours. See VENDORED.md.
+license = "Apache-2.0 AND MIT"
 edition.workspace = true
 rust-version.workspace = true
 description = "FASTQ format reader and writer"
@@ -15,6 +17,9 @@ categories = ["parser-implementations", "science::bioinformatics"]
 async = ["dep:futures", "dep:tokio"]
 
 [dependencies]
+fritillaria-core.workspace = true
+
+# Vendored path.
 bstr.workspace = true
 memchr.workspace = true
 
@@ -22,6 +27,10 @@ futures = { workspace = true, optional = true, features = ["std"] }
 tokio = { workspace = true, optional = true, features = ["io-util"] }
 
 [dev-dependencies]
+fritillaria-core = { workspace = true, features = ["testing"] }
+# tests/columns.rs inflates the committed bgzipped fixtures. Dev-only: the
+# columnar path takes an already-inflated buffer and knows nothing of BGZF.
+fritillaria-bgzf.workspace = true
 tokio = { workspace = true, features = ["fs", "io-std", "macros", "rt-multi-thread"] }
 
 [lints.rust]
