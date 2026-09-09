@@ -23,7 +23,8 @@
 
 use fritillaria_core::{Error, Result};
 
-use crate::seq::{decode_sequence, packed_len};
+use crate::aux::{Array, Fields, Tag, Value, Values};
+use crate::seq::{cigar_op_kind, cigar_op_len, decode_sequence, packed_len};
 
 /// Size of the fixed core, excluding the `block_size` prefix.
 pub const RECORD_CORE_SIZE: usize = 32;
@@ -266,6 +267,98 @@ impl<'a> Record<'a> {
         let end = 4 + read_u32(self.buf, 0).unwrap_or(0) as usize;
         self.buf.get(self.aux_start()..end).unwrap_or_default()
     }
+
+    /// Decoded aux fields.
+    ///
+    /// Lazy and zero-copy; see [`crate::aux`] for what the values borrow. Each
+    /// item is a `Result` because one malformed field invalidates every field
+    /// after it.
+    #[must_use]
+    pub fn aux(&self) -> Fields<'a> {
+        Fields::new(self.aux_raw())
+    }
+
+    /// Looks up a single aux tag.
+    ///
+    /// `Ok(None)` means the tag is absent; `Err` means the aux block is
+    /// malformed at or before where the tag would have been. Scans linearly,
+    /// which is what the format allows — there is no index.
+    pub fn aux_get(&self, tag: Tag) -> Result<Option<Value<'a>>> {
+        for field in self.aux() {
+            let (t, value) = field?;
+            if t == tag {
+                return Ok(Some(value));
+            }
+        }
+        Ok(None)
+    }
+
+    /// CIGAR operations as raw `u32`s, exactly as stored in this record.
+    ///
+    /// This is the *stored* CIGAR: if it is the long-CIGAR placeholder, this
+    /// returns the two placeholder ops, not the real ones. Use
+    /// [`Record::cigar_resolved`] to follow `CG`.
+    #[must_use]
+    pub fn cigar(&self) -> Values<'a, u32> {
+        Values::new(self.cigar_raw())
+    }
+
+    /// Whether the stored CIGAR is the placeholder for a long CIGAR.
+    ///
+    /// `n_cigar_op` is a 16-bit field, so a CIGAR of more than 65535 operations
+    /// cannot be stored inline. The spec's workaround puts the real CIGAR in a
+    /// `CG` tag of type `B:I` and leaves `<l_seq>S<ref_len>N` in its place.
+    ///
+    /// The shape is checked rather than merely counting ops, because a genuine
+    /// two-op `S`/`N` record is legal and must not be mistaken for a
+    /// placeholder: the soft clip has to cover the *whole* read.
+    #[must_use]
+    pub fn has_long_cigar_placeholder(&self) -> bool {
+        if self.cigar_op_count() != 2 {
+            return false;
+        }
+        let ops = self.cigar();
+        let (Some(first), Some(second)) = (ops.get(0), ops.get(1)) else {
+            return false;
+        };
+        cigar_op_kind(first) == Some(b'S')
+            && cigar_op_len(first) as usize == self.sequence_len()
+            && cigar_op_kind(second) == Some(b'N')
+    }
+
+    /// CIGAR operations, following the `CG` tag when the stored CIGAR is the
+    /// long-CIGAR placeholder.
+    ///
+    /// Returns the same `u32` encoding either way, so callers need no special
+    /// case. `CG` is a `B:I` array of exactly the ops that would have been
+    /// inline, so this is a change of location, not of encoding.
+    ///
+    /// Errors if the aux block is malformed, or if the placeholder is present
+    /// but `CG` is missing or is not a `B:I` array — a record claiming a long
+    /// CIGAR with nowhere to read it from is corrupt, and silently returning
+    /// the placeholder would hand back a CIGAR that does not describe the read.
+    pub fn cigar_resolved(&self) -> Result<Values<'a, u32>> {
+        if !self.has_long_cigar_placeholder() {
+            return Ok(self.cigar());
+        }
+
+        match self.aux_get(*b"CG")? {
+            Some(Value::Array(Array::UInt32(values))) => Ok(values),
+            Some(other) => Err(Error::Malformed {
+                format: "bam",
+                position: 0,
+                reason: format!(
+                    "long-CIGAR placeholder present but CG is type '{}', not B:I",
+                    other.ty() as char
+                ),
+            }),
+            None => Err(Error::Malformed {
+                format: "bam",
+                position: 0,
+                reason: "long-CIGAR placeholder present but no CG tag".to_string(),
+            }),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -434,5 +527,142 @@ pub(crate) mod tests {
     #[test]
     fn rejects_a_truncated_record() {
         assert!(Record::new(&[0u8; 8]).is_err());
+    }
+
+    /// Builds a record with an explicit CIGAR and aux block, for the cases
+    /// `build_record` cannot express.
+    fn build_record_with(seq_len: usize, cigar: &[u32], aux: &[u8]) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.extend_from_slice(&0i32.to_le_bytes()); // refID
+        body.extend_from_slice(&0i32.to_le_bytes()); // pos
+        body.push(2); // l_read_name, "r\0"
+        body.push(60);
+        body.extend_from_slice(&0u16.to_le_bytes()); // bin
+        body.extend_from_slice(&(cigar.len() as u16).to_le_bytes());
+        body.extend_from_slice(&0u16.to_le_bytes()); // flag
+        body.extend_from_slice(&(seq_len as u32).to_le_bytes());
+        body.extend_from_slice(&(-1i32).to_le_bytes()); // next_refID
+        body.extend_from_slice(&(-1i32).to_le_bytes()); // next_pos
+        body.extend_from_slice(&0i32.to_le_bytes()); // tlen
+        assert_eq!(body.len(), RECORD_CORE_SIZE);
+
+        body.extend_from_slice(b"r\0");
+        for op in cigar {
+            body.extend_from_slice(&op.to_le_bytes());
+        }
+        body.extend_from_slice(&vec![0x11; seq_len.div_ceil(2)]); // packed seq
+        body.extend_from_slice(&vec![0xff; seq_len]); // absent quals
+        body.extend_from_slice(aux);
+
+        let mut record = (body.len() as u32).to_le_bytes().to_vec();
+        record.extend_from_slice(&body);
+        record
+    }
+
+    /// `<len><op>` packed the way BAM stores a CIGAR operation.
+    fn op(len: u32, kind: u8) -> u32 {
+        let code = crate::seq::CIGAR_OPS
+            .iter()
+            .position(|&k| k == kind)
+            .unwrap();
+        (len << 4) | code as u32
+    }
+
+    /// A `CG:B:I` aux field holding `ops`.
+    fn cg_tag(ops: &[u32]) -> Vec<u8> {
+        let mut v = b"CGBI".to_vec();
+        v.extend_from_slice(&(ops.len() as u32).to_le_bytes());
+        for o in ops {
+            v.extend_from_slice(&o.to_le_bytes());
+        }
+        v
+    }
+
+    #[test]
+    fn resolves_a_long_cigar_from_the_cg_tag() {
+        // The >65535-op overflow. No fixture in this repo exercises it: HiFi
+        // reads are far too accurate to produce that many ops, so this is
+        // built to spec by hand.
+        let seq_len = 1000;
+        let real: Vec<u32> = (0..70_000).map(|_| op(1, b'M')).collect();
+        let placeholder = [op(seq_len as u32, b'S'), op(500, b'N')];
+        let raw = build_record_with(seq_len, &placeholder, &cg_tag(&real));
+        let record = Record::new(&raw).unwrap();
+
+        assert!(record.has_long_cigar_placeholder());
+        assert_eq!(
+            record.cigar().len(),
+            2,
+            "the stored CIGAR is the placeholder"
+        );
+
+        let resolved = record.cigar_resolved().unwrap();
+        assert_eq!(resolved.len(), 70_000);
+        assert_eq!(resolved.get(0), Some(op(1, b'M')));
+        assert_eq!(resolved.get(69_999), Some(op(1, b'M')));
+    }
+
+    #[test]
+    fn a_genuine_two_op_record_is_not_a_placeholder() {
+        // The false positive that matters: `S` then `N` is a legal CIGAR. It is
+        // only a placeholder when the soft clip covers the entire read.
+        let raw = build_record_with(1000, &[op(10, b'S'), op(500, b'N')], &[]);
+        let record = Record::new(&raw).unwrap();
+
+        assert!(!record.has_long_cigar_placeholder());
+        assert_eq!(record.cigar_resolved().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_placeholder_without_a_cg_tag_is_an_error() {
+        // Returning the placeholder here would hand back a CIGAR that does not
+        // describe the read, which is worse than failing.
+        let raw = build_record_with(1000, &[op(1000, b'S'), op(500, b'N')], &[]);
+        let record = Record::new(&raw).unwrap();
+
+        assert!(record.has_long_cigar_placeholder());
+        assert!(matches!(
+            record.cigar_resolved(),
+            Err(Error::Malformed { format: "bam", .. })
+        ));
+    }
+
+    #[test]
+    fn a_placeholder_with_a_wrongly_typed_cg_is_an_error() {
+        let mut aux = b"CGZ".to_vec();
+        aux.extend_from_slice(b"not an array\0");
+        let raw = build_record_with(1000, &[op(1000, b'S'), op(500, b'N')], &aux);
+        let record = Record::new(&raw).unwrap();
+
+        assert!(matches!(
+            record.cigar_resolved(),
+            Err(Error::Malformed { format: "bam", .. })
+        ));
+    }
+
+    #[test]
+    fn cigar_resolved_passes_through_an_ordinary_cigar() {
+        let raw = build_record(b"read1", b"ACGT", None);
+        let record = Record::new(&raw).unwrap();
+        let ops = record.cigar_resolved().unwrap();
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops.get(0), Some(op(4, b'M')));
+    }
+
+    #[test]
+    fn aux_lookup_finds_a_tag_and_reports_absence() {
+        let mut aux = b"NMC".to_vec();
+        aux.push(7);
+        aux.extend_from_slice(b"XZZhello\0");
+        let raw = build_record_with(4, &[op(4, b'M')], &aux);
+        let record = Record::new(&raw).unwrap();
+
+        assert_eq!(record.aux_get(*b"NM").unwrap().unwrap().as_int(), Some(7));
+        assert_eq!(
+            record.aux_get(*b"XZ").unwrap().unwrap().as_bytes(),
+            Some(&b"hello"[..])
+        );
+        assert!(record.aux_get(*b"ZZ").unwrap().is_none());
+        assert_eq!(record.aux().count(), 2);
     }
 }

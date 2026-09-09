@@ -12,6 +12,62 @@ samtools install that not every machine has (the Colab image has none).
 |---|---|
 | `htslib.bam` | 8 records, 2 references, one BGZF data block |
 | `htslib_multiblock.bam` | 4000 records over 15 BGZF blocks |
+| `pacbio_hifi.bam` | 20 real PacBio HiFi reads, 25 BGZF blocks, tag-heavy |
+
+## What no fixture here covers
+
+Recorded because both were assumed to be covered and are not:
+
+- **A record spanning a BGZF block boundary.** htslib calls `bgzf_flush_try`
+  before each record, which starts a new block rather than splitting a record
+  that would not fit. So an htslib-written BAM only splits records *larger than
+  65280 bytes*, and the largest record in any fixture here is 56 KB. That is why
+  `htslib_multiblock.bam`'s blocks hold 65190 bytes rather than a full 65280.
+  Cross-block reads are covered by `cpu.rs`'s
+  `concatenation_is_seamless_across_blocks`, which uses our own writer with a
+  small payload size — necessarily, since htslib will not produce the case.
+- **The `CG` long-CIGAR overflow.** It needs more than 65535 CIGAR operations in
+  one record; HiFi's accuracy caps `pacbio_hifi.bam` at 790. Covered by
+  hand-built records in `record.rs`. **Ultra-long ONT data would exercise both
+  of these**, and is the fixture still worth adding.
+
+## `pacbio_hifi.bam`
+
+The long-read fixture. Aux tags are a trailing detail in aligned Illumina data
+and the *payload* in long-read data, so this is the only file here that tests
+aux decoding against anything realistic.
+
+Contents: 20 reads of 11.0–31.0 kbp, 86 references (GRCh37), 1.14 MB
+uncompressed over 25 BGZF blocks, and 25–29 aux tags per record. Between them
+they exercise the
+binary scalar types `C`, `I`, `S`, `f`, `Z` and the `B` subtypes `C`, `S`, `i`,
+`f` — including `MM`/`ML` base modifications and per-base kinetics arrays.
+
+The types this file does *not* contain (`A`, `H`, `c`, `s`, `i` scalars and
+`B:c`, `B:s`, `B:I`) are covered synthetically in `aux.rs`. Note this is not a
+gap in the fixture so much as a property of htslib: it writes the **narrowest
+integer type that fits**, so `c`/`s`/`i` appear only when a value is negative or
+large, and `samtools view` prints every integer width as `i` regardless.
+
+### Regenerating
+
+Source: [GIAB](https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/data/AshkenazimTrio/HG002_NA24385_son/PacBio_HiFi-Revio_20231031/HG002_PacBio-HiFi-Revio_20231031_48x_GRCh37.bam)
+— HG002/NA24385, PacBio HiFi Revio, 2023-10-31, 48x, aligned to GRCh37. Public
+NIST reference data. The source is 77 GB, so it is streamed rather than
+downloaded: `samtools` reads it over HTTPS and only the leading blocks are
+fetched.
+
+```bash
+URL=https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/data/AshkenazimTrio/\
+HG002_NA24385_son/PacBio_HiFi-Revio_20231031/HG002_PacBio-HiFi-Revio_20231031_48x_GRCh37.bam
+# 101 header lines + the first 20 records.
+samtools view -h "$URL" | head -n 121 > /tmp/pacbio.sam
+samtools view -b /tmp/pacbio.sam -o testdata/pacbio_hifi.bam
+```
+
+`md5sum` of the committed file is `aee35dc0f57348e5b977caeb06ba566d`, but see
+the note below: `samtools view -b` stamps its own `@PG` line, so the bytes are
+not reproducible across samtools versions and the tests assert on content.
 
 ## `htslib.bam`
 

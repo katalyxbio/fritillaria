@@ -49,9 +49,11 @@ silently delivering CPU speed to someone who came for a GPU is the worst thing i
 Only BAM is implemented so far; the rest is the roadmap, not a promise.
 
 Note that BAM is an **input** format as well as an output one — Nanopore and PacBio deliver raw
-reads as unaligned BAM. That puts aux tag decoding (`MM`/`ML` base modifications, `mv` move
-tables) and the `CG` long-CIGAR workaround on the critical path; both are currently unimplemented
-and `Record::aux_raw()` hands back undecoded bytes.
+reads as unaligned BAM, where the basecaller's output lives in aux tags (`MM`/`ML` base
+modifications, per-base kinetics) rather than being trailing detail. Those are decoded: every
+scalar type and every `B` array subtype, zero-copy, validated tag-by-tag against `samtools view`
+on real PacBio HiFi reads. The `CG` long-CIGAR workaround is implemented too, though only tested
+against hand-built records — HiFi is too accurate to reach 65535 CIGAR operations.
 
 ## Status
 
@@ -59,7 +61,7 @@ and `Record::aux_raw()` hands back undecoded bytes.
 |---|---|
 | `fritillaria-core` | Types, errors, `VirtualOffset`, the `BlockCodec` and `DeviceBlockCodec` seams |
 | `fritillaria-bgzf` | Block discovery, CPU codec, writer, batched `BgzfReader` |
-| `fritillaria-bam` | Header, record boundary scan, columnar `RecordBatch`, zero-copy `Record` |
+| `fritillaria-bam` | Header, record boundary scan, columnar `RecordBatch`, zero-copy `Record`, aux tags |
 | `fritillaria-cuda` | DEFLATE inflate + CRC32 kernels, device-resident output, nvCOMP codec — verified on a Tesla T4 |
 | `fritillaria` | Facade and backend selection (nvCOMP → our kernel → CPU) |
 
@@ -163,11 +165,9 @@ upload, further codec work buys little. The effort belongs downstream of it:
 
 1. **Columnar record decode on-device.** Turning bytes in VRAM into *records* in VRAM is the
    actual deliverable, and the part neither nvCOMP nor any raw codec addresses.
-2. **Aux tag decoding**, including `B` arrays and the `CG` long-CIGAR workaround — unavoidable
-   for long-read uBAM, where the basecaller's output lives in tags.
-3. **BCF and `bgzip`ped VCF**, which should be close to free through the noodles seam, then
+2. **BCF and `bgzip`ped VCF**, which should be close to free through the noodles seam, then
    `bgzip`ped FASTQ.
-4. **GPU-side BGZF compression**, so a tool that produces records on-device can write them back
+3. **GPU-side BGZF compression**, so a tool that produces records on-device can write them back
    without paying the transfer the read path just removed.
 
 Then indexes and region queries, and CPU text formats for breadth. CRAM is not currently planned.

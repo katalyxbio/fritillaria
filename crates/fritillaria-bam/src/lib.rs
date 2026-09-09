@@ -13,11 +13,13 @@
 //! Records span BGZF block boundaries, so both stages run over the
 //! *concatenated* decompressed buffer, never per block.
 
+pub mod aux;
 pub mod batch;
 pub mod header;
 pub mod record;
 pub mod seq;
 
+pub use aux::{Array, Fields, Tag, Value, Values};
 pub use batch::RecordBatch;
 pub use header::{Header, ReferenceSequence};
 pub use record::{RECORD_CORE_SIZE, Record, scan_records};
