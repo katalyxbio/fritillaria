@@ -390,6 +390,7 @@ dependencies = [
  "fritillaria-refget",
  "fritillaria-sam",
  "fritillaria-tabix",
+ "fritillaria-text",
  "fritillaria-util",
  "fritillaria-vcf",
 ]

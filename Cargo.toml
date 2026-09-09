@@ -29,7 +29,7 @@ version = "0.0.0"
 edition = "2024"
 rust-version = "1.94"
 license = "Apache-2.0"
-repository = "https://github.com/alessandrogiannini/fritillaria"
+repository = "https://github.com/katalyxbio/fritillaria"
 
 [workspace.dependencies]
 # The four merged crates carry the vendored version numbers, because the

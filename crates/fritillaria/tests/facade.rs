@@ -40,6 +40,9 @@ fn every_file_format_is_reachable_by_its_noodles_name() {
     let _ = gff::Line::default();
     let _: Option<gtf::Record> = None;
     let _ = cram::Record::default();
+
+    // Ours, and the only crate here that serves five formats at once.
+    let _ = fritillaria::text::Dialect::SAM;
 }
 
 /// The GPU half is additive: it sits *next to* the vendored API, not over it.

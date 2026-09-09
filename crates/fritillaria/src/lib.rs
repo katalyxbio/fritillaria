@@ -62,6 +62,8 @@
 pub use fritillaria_bgzf as bgzf;
 pub use fritillaria_core as core;
 pub use fritillaria_cuda as cuda;
+/// The shared line and field scanner behind SAM, VCF, BED, GFF and GTF.
+pub use fritillaria_text as text;
 
 // BGZF-contained: these get the GPU path.
 #[cfg(feature = "bam")]

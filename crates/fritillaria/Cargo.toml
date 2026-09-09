@@ -58,6 +58,7 @@ nvcomp = ["cuda", "fritillaria-cuda/nvcomp"]
 fritillaria-core.workspace = true
 fritillaria-bgzf.workspace = true
 fritillaria-cuda.workspace = true
+fritillaria-text.workspace = true
 
 # The format surface. The facade's whole job is that a caller migrating from
 # noodles finds every format where they expect it.

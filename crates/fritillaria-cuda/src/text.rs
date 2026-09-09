@@ -374,7 +374,15 @@ mod cuda_impl {
             let starts_dev = self.upload(&starts)?;
 
             // Phase 4: write the tabs into their reserved spans.
-            let tabs = self.zeros::<u64>(total.max(1) as usize)?;
+            // Allocated as bytes so the same allocation becomes the `tabs`
+            // column. The kernel reads it as `u64*`, which is what it is.
+            //
+            // Reading it back and re-uploading -- which is what this did first
+            // -- would be a device-to-host round trip of an array that scales
+            // with *fields*, the exact transfer the three-phase design exists
+            // to avoid. Writing that here while the module docs argued against
+            // it would have been a lie the compiler could not catch.
+            let mut tabs = self.zeros::<u8>(total.max(1) as usize * 8)?;
             let mut builder = self.stream.launch_builder(&self.write_fields);
             builder
                 .arg(alloc.slice())
@@ -382,7 +390,7 @@ mod cuda_impl {
                 .arg(&ends)
                 .arg(&n_u32)
                 .arg(&starts_dev)
-                .arg(&tabs);
+                .arg(&mut tabs);
             // SAFETY: each thread writes only into `starts[r]..starts[r + 1]`,
             // which the prefix sum made disjoint, and the kernel stops at the
             // upper bound.
@@ -402,16 +410,12 @@ mod cuda_impl {
             let header_len = header_offsets.len();
             let header_slice = self.upload(header_offsets)?;
             let ends_bytes = self.upload(&end_values[..n])?;
-            let tabs_bytes = {
-                let raw = self.read(&tabs)?;
-                self.upload(&raw[..total as usize])?
-            };
 
             let columns = DeviceColumns {
                 record_offsets: self.column(offsets, n * 8)?,
                 record_ends: self.column(ends_bytes, n * 8)?,
                 header_offsets: self.column(header_slice, header_len * 8)?,
-                tabs: self.column(tabs_bytes, total as usize * 8)?,
+                tabs: self.column(tabs, total as usize * 8)?,
                 field_starts: self.column(starts_dev, (n + 1) * 8)?,
             };
             DeviceRecordBatch::new(n, header_len, tail, columns)

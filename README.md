@@ -1,18 +1,36 @@
 # fritillaria
 
-**[noodles](https://github.com/zaeleus/noodles) for GPU.** A Rust-native library for genomic
-file formats that puts records **in GPU memory**, so GPU-accelerated tools can be built on top
-of it instead of rewriting BGZF, BAM and BCF parsing from scratch.
+**[noodles](https://github.com/zaeleus/noodles) for GPU.** A Rust library for genomic file
+formats that delivers parsed records **into GPU memory**, so GPU-accelerated tools can be built
+on top of it instead of rewriting BGZF, BAM and BCF parsing from scratch.
 
-The motivating case: decompress a BAM directly into device memory to feed a GPU-accelerated
-tool, so the data never crosses PCIe in its decompressed form. Not just alignment — variant
-calling, QC and general pipeline I/O are the same problem, which is why format coverage matters
-as much as speed. A GPU tool that hits an unsupported format has to fall back to the CPU and
-round-trip its data, losing the entire benefit.
+The motivating case: read a BAM straight into device memory to feed a GPU-accelerated tool, so
+the data never crosses PCIe in its decompressed form. Not only alignment — variant calling, QC
+and general pipeline I/O are the same problem, which is why format coverage matters as much as
+speed. A GPU tool that meets an unsupported format has to fall back to the CPU and round-trip
+its data, losing the benefit entirely.
 
-**Already using noodles? Adoption is a rename.** The CPU half of this library *is* noodles —
-all 18 crates, vendored and renamed, MIT © 2018 Michael Macias (see [VENDORED.md](VENDORED.md)).
-Every format it reads, this reads, with the same API:
+```rust
+use fritillaria::{bgzf::DeviceBgzfReader, cuda::BamDecoder, select_codec, Backend};
+
+let (codec, backend) = select_codec(Backend::Auto)?;   // nvCOMP → our kernel → CPU
+let mut reader = DeviceBgzfReader::new(file, &codec);
+let decoder = BamDecoder::new()?;
+
+while let Some(batch) = reader.next_batch()? {
+    let records = decoder.decode(&batch.data, records_start)?;
+    // records.position(), .flags(), .sequence_len() … all still in VRAM
+    let tail = records.tail();
+    drop(batch);
+    reader.carry_from(tail)?;
+}
+```
+
+## Already using noodles? Adoption is a rename
+
+The CPU half of this library *is* noodles — all 18 crates, vendored and renamed, MIT © 2018
+Michael Macias (see [VENDORED.md](VENDORED.md)). Every format it reads, this reads, with the
+same API:
 
 ```rust
 use noodles_bam as bam;   // before
@@ -20,277 +38,199 @@ use fritillaria::bam;     // after
 ```
 
 Putting a GPU underneath is one more line, because `BgzfReader` implements the BGZF traits every
-format reader is generic over. Device-resident and columnar access are additive on top of that,
-never a replacement for it.
+format reader is generic over:
 
-**This is not trying to be a faster `samtools`.** Against `bgzip` as a standalone decompressor
-we lose, and that is the wrong comparison: htslib produces bytes in host RAM, which is not where
-a GPU consumer needs them. The comparison that matters is *time to records in device memory*,
-where PCIe carries compressed bytes instead of decompressed ones — a 3.37x reduction in link
-traffic on real WGS data. See *Performance*.
+```rust
+let mut reader = bam::io::Reader::from(BgzfReader::with_codec(file, CudaCodec::new()?));
+```
 
-> **Early, and honest about it.** Read and write work for every format, because that half is
-> noodles. The GPU half is narrower than the format list suggests: **BAM**, **BCF** and
-> **bgzipped FASTQ** go in and device-resident columns come out, verified against
-> htslib-written files on a real GPU. Everything else in a BGZF container gets GPU
-> *decompression* and no more, and the text formats get neither. The table below keeps those
-> columns apart on purpose.
+Device-resident and columnar access are **additive** on top of that, never a replacement. The
+vendored readers work unchanged, which is also what keeps a future rebase onto upstream noodles
+mechanical.
 
 ## Which inputs get the GPU
 
 The dividing line is the **container**, not the format.
 
-BGZF — the container under BAM, BCF, and anything `bgzip`ped — is a sequence of *independent*
-gzip members, each holding at most 64 KiB. Block *i* needs nothing from block *i-1*, so blocks
-map cleanly onto parallel hardware. Everything in a BGZF container therefore shares one
-accelerated path: block discovery, parallel inflate, CRC verification, and virtual offsets are
-all container-level.
+BGZF — under BAM, BCF, and anything `bgzip`ped — is a sequence of *independent* gzip members,
+each holding at most 64 KiB. Block *i* needs nothing from block *i-1*, so blocks map cleanly
+onto parallel hardware. Everything in a BGZF container therefore shares one accelerated path:
+block discovery, parallel inflate, CRC verification and virtual offsets are all container-level.
 
-An ordinary `.gz` is **not** that: it is a single DEFLATE stream with a 32 KiB sliding window,
-and back-references make it inherently serial. It cannot be split without a pre-built index.
+An ordinary `.gz` is not that: one DEFLATE stream with a 32 KiB sliding window, where
+back-references make it inherently serial. It cannot be split without a pre-built index.
 
-This library will not pretend otherwise. Which path an input takes is public API, because
-silently delivering CPU speed to someone who came for a GPU is the worst thing it could do.
+Every format below **reads and writes on the CPU today**, because that half is noodles.
+*Decompression* and *parsing* are separate columns on purpose — one container-level kernel
+serves every BGZF format, while parsing has no shared layer and each format needs its own.
 
-Every format below **reads and writes on the CPU today**, because that half is noodles. What
-varies is the GPU column, and it is the only one worth tracking.
+| Format | Container | GPU decompression | GPU parsing |
+|---|---|---|---|
+| BAM (aligned and unaligned) | BGZF | yes | **full** — record scan and columnar decode |
+| BCF | BGZF | yes | **full** — boundary scan and site-core columns |
+| FASTQ (`bgzip`ped) | BGZF | yes | **full** — boundary scan and columns |
+| FASTA | text | — | **compaction** — reference contiguous in VRAM |
+| SAM, VCF, BED, GFF, GTF | text | if `bgzip`ped | **framing** — shared line and field scan |
+| CRAM | its own | — | — |
+| plain `.gz` (any format) | one DEFLATE stream | cannot be block-parallel | — |
 
-| Format | Container | GPU path |
-|---|---|---|
-| BAM (aligned and unaligned) | BGZF | **full** — inflate, record scan, columnar decode, device-resident |
-| BCF | BGZF | **full** — boundary scan and columnar site-core decode, device-resident |
-| FASTQ (`bgzip`ped) | BGZF | **full** — boundary scan and columnar decode, device-resident |
-| `bgzip`ped VCF, tabix-indexed files | BGZF | decompression only |
-| SAM, BED, GFF/GTF, FASTA, CRAM | text / own | none, and none claimed |
-| plain `.gz` (any format) | one DEFLATE stream | cannot be block-parallel |
+Which path an input takes is public API rather than an implementation detail, because silently
+delivering CPU speed to someone who came for a GPU is the worst thing this library could do.
 
-**Breadth is done; depth is partial.** Three formats have the device-resident columnar path this
-project exists for — BAM, BCF and bgzipped FASTQ, which between them cover raw-read input,
-alignment and variant calling. The rest is the roadmap, not a promise.
-
-Note that *decompression* and *parsing* are separate claims. Everything in a BGZF container gets
-GPU decompression from one container-level kernel; parsing has no shared layer, so each format
-needs its own and the three that exist did not generalise to one another.
-
-Note that BAM is an **input** format as well as an output one — Nanopore and PacBio deliver raw
-reads as unaligned BAM, where the basecaller's output lives in aux tags (`MM`/`ML` base
-modifications, per-base kinetics) rather than being trailing detail. Those are decoded: every
-scalar type and every `B` array subtype, zero-copy, validated tag-by-tag against `samtools view`
-on real PacBio HiFi reads. The `CG` long-CIGAR workaround is implemented too, though only tested
-against hand-built records — even ultra-long ONT reads in a 187 GB GIAB file topped out at
-46,943 of the 65,535 operations needed to trigger it.
+BAM is an **input** format as well as an output one: Nanopore and PacBio deliver raw reads as
+unaligned BAM, where the basecaller's output lives in aux tags (`MM`/`ML` base modifications,
+per-base kinetics) rather than being trailing detail. Those are decoded — every scalar type and
+every `B` array subtype, zero-copy, validated tag by tag against `samtools view` on real PacBio
+HiFi reads.
 
 Ultra-long reads matter for a second reason: an ONT record can be far larger than a 64 KiB BGZF
-block, so records genuinely span blocks and can exceed a whole batch. `testdata/ont_ultralong.bam`
-carries a 254 KB record crossing three block boundaries, and the tests drive the
-carry-the-partial-record loop a real consumer has to write.
+block, so records genuinely span blocks and can exceed a whole batch.
+`testdata/ont_ultralong.bam` carries a 254 KB record crossing three block boundaries, and the
+tests drive the carry-the-partial-record loop a real consumer has to write.
 
-## Status
+## Performance
 
-19 crates. Twelve are vendored noodles, unchanged. Five hold **both** halves — the vendored
-CPU API at the crate root, ours alongside it — and two are entirely ours.
-
-| Crate | What works |
-|---|---|
-| `fritillaria-core` | *Ours:* errors, `VirtualOffset`, the `BlockCodec`/`DeviceBlockCodec` seams. *Vendored:* `Position`, `Region` |
-| `fritillaria-bgzf` | *Ours:* block discovery, CPU codec, writer, batched `BgzfReader`, device-resident `DeviceBgzfReader`. *Vendored:* `io::{Reader, Writer}`, `gzi` |
-| `fritillaria-bam` | *Ours* (`columnar`): record boundary scan, `RecordBatch`, zero-copy `Record`, aux tags, device columns. *Vendored:* `io`, `bai`, `fs`, `record` |
-| `fritillaria-bcf` | *Ours* (`columnar`): header + dictionaries, boundary scan (host **and** device), BCF2 typed values, device columns. *Vendored:* `io`, `fs`, `record` |
-| `fritillaria-fastq` | *Ours* (`columnar`): validator, boundary scan, `RecordBatch`, device columns. *Vendored:* `io`, `fai`, `fs`, `record` |
-| `fritillaria-cuda` | All ours. DEFLATE inflate + CRC32 kernels, device-resident output, nvCOMP codec, columnar decode for BAM, BCF and FASTQ — verified on a Tesla T4 |
-| `fritillaria` | Facade: re-exports every format, plus backend selection (nvCOMP → our kernel → CPU) |
-| `-sam -vcf -csi -tabix -cram -bed -fasta -gff -gtf -util -htsget -refget` | Vendored unchanged |
-
-Our own code is about 19k lines; the vendored half is 137k. The GPU work is the smaller number
-and the reason the project exists — see [VENDORED.md](VENDORED.md) for the exact split.
-
-Two GPU codecs sit behind the same traits with the same mandatory verification, so choosing
-between them is a performance decision rather than a semantic one. NVIDIA's **nvCOMP** is the
-fast path; our own inflate kernel is the portable fallback and a second test oracle. It covers
-all three DEFLATE block types (stored, fixed and dynamic Huffman), one thread per BGZF block,
-with CRC32 folded in so verification costs no extra pass.
-
-Correctness is checked by differential testing against `miniz_oxide` on real hardware — and for
-nvCOMP against our kernel as well, so three independent implementations have to agree
-byte-for-byte on an htslib-written BAM.
-
-**The vendored readers sit on the GPU path with no changes to them.** `BgzfReader` implements
-the BGZF reader traits that every format crate is generic over, so `bam::io::Reader` reads a
-real htslib BAM whose blocks were inflated on the GPU — verified on a T4, with GPU and CPU
-backends producing identical records. The same substitution accelerates every other BGZF format
-— verified for BCF, where `bcf::io::Reader` reads a bcftools-written file through this reader
-with no new code on our side.
-
-That property is not just convenience: it is what keeps the vendored modules byte-for-byte
-upstream, and so keeps a rebase onto a newer noodles mechanical. See [VENDORED.md](VENDORED.md).
-
-```rust
-use fritillaria::{bam, bgzf::BgzfReader, cuda::CudaCodec};
-
-// Same API as noodles, GPU decompression underneath.
-let inner = BgzfReader::with_codec(file, CudaCodec::new()?);
-let mut reader = bam::io::Reader::from(inner);
-let header = reader.read_header()?;
-for record in reader.records() { /* ... */ }
-```
-
-Correctness is checked against htslib, not just against ourselves: `testdata/` holds
-`samtools`-written BAMs, and the tests both read those and hand our writer's output back to
-`samtools`.
-
-### Performance
-
-Measured over a 3 GiB prefix of a real 1000 Genomes WGS BAM (166,012 blocks, 10.11 GiB
-inflated, 3.37x ratio) on an L4. Both GPU codecs in the same run, back to back on the same file
-— the only fair way to compare them. Device-resident, so `download` is just the per-block
-verification arrays rather than the payload.
+Measured over a 3 GiB prefix of a real 1000 Genomes WGS BAM (166,012 blocks, 10.11 GiB inflated,
+3.37x ratio) on an NVIDIA L4. Both GPU codecs in the same run, back to back on the same file.
+Device-resident, so `download` is just the per-block verification arrays rather than the payload.
 
 | Phase | our kernel | nvCOMP |
 |---|---|---|
 | upload H2D | 0.86s | 0.89s |
-| **kernel (inflate + CRC32)** | 4.68s | **0.86s** |
+| **inflate + CRC32** | 4.68s | **0.86s** |
 | download D2H | 0.003s | 0.003s |
 | **sum of phases** | 5.55s | **1.75s** |
 
-**nvCOMP is 5.5x faster on the kernel phase**, at 11.8 GiB/s of output — and that is *including*
-the per-block CRC32, which our kernel folds into inflate and nvCOMP needs a second pass for.
-Verification is never skipped on either path.
+**nvCOMP inflates at 11.8 GiB/s of output on an L4** — 5.5x our own kernel, and that includes
+the per-block CRC32. Verification is never skipped on either path: the checksum is compared
+against what the file itself records, which is stronger than trusting a library self-check.
 
-Two costs worth naming because they turned out to be small: nvCOMP requires 4-byte-aligned input
-and a BGZF payload starts 18 bytes into its gzip member, so payloads are restaged on-device
-first — that is the entire 31 ms difference in the upload row, 0.6% of the phase. And the earlier
-D2H figure of 7.2s, once 54% of runtime, is gone: keeping output on the device deleted it rather
-than optimising it.
+NVIDIA's nvCOMP is the default fast path; our own inflate kernel is the portable fallback and a
+second test oracle. Keeping output on the device deleted a 7.2s device-to-host copy that had
+been 54% of runtime — removed rather than optimised.
 
-### Time to records in device memory — the comparison that matters
+### Time to records in device memory
 
-Measured end to end on the same L4 and the same file: a BAM on disk in, **29,887,809 parsed
-records in device columns** out. This is the shipping path — `DeviceBgzfReader` feeding
-`BamDecoder` — not a rig, and nothing returns to the host but the BAM header.
+The metric the design is actually argued on. Measured end to end on the same L4 and file: a BAM
+on disk in, **29,887,809 parsed records in device columns** out, through the shipping path.
+Nothing returns to the host but the BAM header.
 
 | Path | Produces | Wall |
 |---|---|---|
-| **fritillaria + nvCOMP** | 29.9M **parsed records**, columnar, in VRAM | **2.812s** |
+| **fritillaria + nvCOMP** | 29.9M **parsed records**, columnar, in VRAM | **2.81s** |
 | `bgzip -d -@11` | unparsed **bytes** in host RAM | 4.00s |
 | `bgzip -@11` then upload | unparsed bytes in VRAM | 4.00s pipelined / 6.97s sequential |
 
 **About 1.4x on wall clock against a 12-core htslib — while delivering something it has not
 produced at all.** The CPU path ends with raw bytes and still has every record to parse.
 
-Two things the breakdown shows, both of which the design was betting on without evidence until
-now:
+Two things the breakdown shows:
 
-- **Turning bytes into records costs ~7% of the run** — 0.188s against 2.625s of getting the
-  bytes there. Decoding on the device is close to free next to moving the data.
-- **Batch size barely matters** between 256 and 4096 blocks. The serial reconcile step in the
-  boundary scan measures 222 ns per block, or 37 ms across the whole file, so the phase that
-  looked most likely to disappoint does not.
+- **Turning bytes into records costs ~7% of the run** — 0.19s against 2.63s of getting the bytes
+  there. Decoding on the device is close to free next to moving the data.
+- **Batch size barely matters** between 256 and 4096 blocks per batch.
 
 The structural point is the durable one: **PCIe carries compressed bytes instead of decompressed
 ones, so the compression ratio becomes an effective bandwidth multiplier on the link** — 3.37x
-fewer bytes on real WGS. That does not depend on any codec being good and does not go away on
-better hardware. The host also never has to hold the 10.11 GiB at all.
+fewer bytes on real WGS. That does not depend on any codec being good, and does not go away on
+better hardware. The host never has to hold the 10.11 GiB at all.
 
-> An earlier version of this table read **3.9x**. That number was inflate-only: it decoded no
-> records and excluded host-side block discovery, so it was not the metric it was labelled with.
-> 1.4x is the measured figure and it supersedes it.
+### Two different questions
 
-### As a standalone decompressor, htslib still wins
+If you want **bytes in host memory**, use htslib: `bgzip -d -@11` does that in ~3.5s, and
+getting our output back to the host means paying the device-to-host copy this design exists to
+delete. No standalone decompression speedup is claimed anywhere in this project.
 
-Same machine, same file. `bgzip -d` on 11 threads does the job in 3.5-4.0s; getting our output
-back into host RAM means paying the device-to-host copy this whole design exists to delete,
-which puts the GPU path behind it.
+If you want **records in device memory**, that is what this is for, and it is the case htslib
+does not address at all.
 
-| | wall | MiB/s of compressed input | htslib |
-|---|---|---|---|
-| `bgzip -d -@ 1` | 24.24s | 127 | 1.16 |
-| **`bgzip -d -@ 11`** | **3.48s** | **882** | 1.16 |
-| `bgzip -d -@ 11` | 4.00s | 768 | 1.13 |
+One caveat on the numbers above: the benchmark VM reports PCIe **gen 1 x16** (~4 GB/s), well
+below a real gen 4 link. Upload dominates the nvCOMP path there, so on faster hardware the
+balance shifts back toward the codec. The 3.37x ratio advantage is invariant.
 
-The two `-@ 11` rows are the same command on different VM images, and the spread is why only
-same-run comparisons are used above. nvCOMP's inflate reproduced exactly across those runs
-(1.754s both times), so the variance is in the baseline, not in us.
+## Status
 
-So there are two different numbers here and they answer different questions. If you want bytes
-in host memory, use htslib. If you want records in device memory, that is what this is for.
-**No standalone decompression speedup is claimed anywhere in this project.**
+20 crates. Eleven are vendored noodles, unchanged. Six hold **both** halves — the vendored CPU
+API at the crate root, ours alongside it — and three are entirely ours.
 
-Caveat on all of the above: Colab reports PCIe **gen 1 x16** (~4 GB/s), well below a real gen 4
-link. Upload dominates the nvCOMP path here, so on faster hardware the balance shifts back
-toward the codec. The 3.37x ratio advantage is invariant.
+| Crate | What works |
+|---|---|
+| `fritillaria-core` | *Ours:* errors, `VirtualOffset`, the `BlockCodec`/`DeviceBlockCodec` seams. *Vendored:* `Position`, `Region` |
+| `fritillaria-bgzf` | *Ours:* block discovery, CPU codec, writer, batched and device-resident readers, indexed seek. *Vendored:* `io`, `gzi` |
+| `fritillaria-bam` | *Ours* (`columnar`): boundary scan, `RecordBatch`, zero-copy `Record`, aux tags, device columns. *Vendored:* `io`, `bai`, `fs`, `record` |
+| `fritillaria-bcf` | *Ours* (`columnar`): header + dictionaries, boundary scan, BCF2 typed values, device columns. *Vendored:* `io`, `fs`, `record` |
+| `fritillaria-fastq` | *Ours* (`columnar`): validator, boundary scan, device columns. *Vendored:* `io`, `fai`, `fs`, `record` |
+| `fritillaria-fasta` | *Ours* (`columnar`): contig index, newline compaction, `DeviceReference`. *Vendored:* `io`, `fai`, `fs`, `record` |
+| `fritillaria-text` | All ours. One line and field scanner for SAM, VCF, BED, GFF and GTF |
+| `fritillaria-cuda` | All ours. DEFLATE inflate + CRC32 kernels, device-resident output, nvCOMP codec, columnar decode for BAM, BCF and FASTQ, FASTA compaction, text scan |
+| `fritillaria` | Facade: re-exports every format, plus backend selection |
+| `-sam -vcf -csi -tabix -cram -bed -gff -gtf -util -htsget -refget` | Vendored unchanged |
 
-### What's next
+**Verified on real hardware.** 80 device tests pass on an NVIDIA T4 and 2,496 on the host.
+Correctness is established by differential testing throughout: GPU output against a CPU
+reference, our parsers against `samtools`, `bcftools` and the vendored noodles readers, and —
+for nvCOMP — against our own kernel as well, so three independent implementations must agree
+byte for byte on an htslib-written BAM.
 
-Decompression is the on-ramp, not the product — and with inflate now balanced against the
-upload, further codec work buys little. The effort belongs downstream of it:
+Fixtures are real files from real writers: htslib, bcftools, NCBI, UCSC, GIAB. Self-generated
+files prove only self-consistency, so `testdata/` avoids them.
 
-1. **Host-side block discovery**, which is now the likely bottleneck: a sequential walk of BGZF
-   headers that measures 2.36s standalone against 0.86s of GPU inflate.
-2. **Columnar BCF decode on device.** Parsing, and now boundary discovery, work end to end;
-   turning the boundaries into device-resident columns is what BAM has and BCF does not. Then
-   `bgzip`ped VCF and FASTQ.
-3. **GPU-side BGZF compression**, so a tool that produces records on-device can write them back
-   without paying the transfer the read path just removed.
+Indexed access works on the GPU path too: `BgzfReader` implements `bgzf::io::Seek`, so a BAI- or
+tabix-driven region query runs on the codec-driven reader rather than falling back to the CPU.
 
-Then indexes and region queries, and CPU text formats for breadth. CRAM is not currently planned.
+## What's next
+
+1. **GPU-side BGZF compression**, so a tool that produces records on-device can write them back
+   without paying the transfer the read path removes. The first step is a measurement rather
+   than a kernel: nvCOMP's Deflate compress ratio against `libdeflate`, since a fast compressor
+   that produced bigger files would undercut the link advantage the design rests on.
+2. **Columnar decode for VCF.gz**, on top of the text scan that already finds its fields.
+3. **2-bit packing for FASTA**, which is what makes a 3.1 Gbp reference sit in 775 MB rather
+   than 3.1 GB. It needs a companion mask for `N` runs and IUPAC codes.
+
+CRAM is not currently planned: it is its own container with its own codecs, so little of this
+stack applies to it.
 
 ## Building
 
 ```bash
-cargo build          # no CUDA toolkit needed
-cargo test           # CPU paths
+cargo build                       # host only; no CUDA toolkit needed
+cargo build --features cuda       # compiles without nvcc — kernels are NVRTC-compiled at runtime
+cargo build --features nvcomp     # compiles without nvCOMP installed — it is dlopened, never linked
+cargo test                        # all CPU paths, including the vendored suites
+cargo test -p fritillaria-cuda    # our code only, the fast inner loop
 ```
 
-`cargo build --features cuda` also works without a GPU or `nvcc`: cudarc dlopens `libcuda` at
-runtime and kernels are compiled by NVRTC on whichever machine has the device. Tests that need a
-GPU skip rather than fail.
+Both GPU features build on a machine with no GPU and no toolkit: cudarc dlopens `libcuda`,
+kernels are compiled at runtime by NVRTC, and nvCOMP is dlopened rather than linked. Only
+*running* device code needs hardware, and device tests skip rather than fail without it.
 
-`cargo build --features nvcomp` likewise works with nvCOMP absent. It is dlopened at runtime,
-never linked — NVIDIA's library is proprietary and cannot be redistributed, and requiring it at
-build time would make the feature undevelopable on a machine without it. Point
-`FRITILLARIA_NVCOMP_LIB` at the library to use it, or install it where the loader will find it;
-`select_codec` falls back to our kernel when it is missing rather than failing.
-
-To run them for real on a rented Colab T4 (the VM is released automatically, including on
-failure):
-
-```bash
-./scripts/colab_test.sh
-```
+`sm_75` (Turing) is the verified floor.
 
 ## Design
 
-Three things shape everything else:
+The pipeline decomposes into independently testable stages:
 
-1. **A noodles-shaped API, with columnar access added rather than substituted.** The familiar
-   record-at-a-time surface is what makes migration possible; dense columns are what make the
-   GPU worth having. Fixed-width fields land in `&[i32]`-style columns instead of per-record
-   structs, because that is what a GPU consumer wants next and re-scattering them into
-   `Vec<Record>` would throw the win away.
-2. **The container is the unit of acceleration, not the format.** Everything BGZF-contained
-   shares one GPU path, so each new BGZF format costs only its record parsing. This is why BCF
-   and `bgzip`ped VCF come before text formats.
+1. **Block discovery** — walk BGZF headers to collect `(offset, size)` pairs. Sequential and
+   I/O-bound; batched so the GPU gets enough work per launch.
+2. **Decompression** — one thread block per BGZF block, into a device buffer, with per-block
+   output offsets from a prefix sum over `ISIZE`.
+3. **Verification** — CRC32 and `ISIZE` per block, on device, never skipped by default. A silent
+   corrupt read in a genomics pipeline is worse than being slower.
+4. **Boundary discovery** — records are variable-length and span blocks, so this runs over the
+   concatenated buffer. Each format needs its own approach, and they do not generalise to one
+   another.
+5. **Field decode** — with boundaries known, records are embarrassingly parallel. Output is
+   **columnar**, which is what a GPU consumer wants next anyway.
 
-   BCF is the first test of that, and it came back split. The container half held exactly as
-   claimed: `noodles_bcf` reads a bcftools-written BCF through this reader with **zero new code**
-   in the BGZF crate. The record half did not. BAM's device-side boundary scan relies on htslib
-   starting a fresh block rather than splitting an alignment, so a block start is almost always a
-   record start — but `bcf_write` packs blocks full, and **0 of 56** interior block boundaries in
-   the BCF fixture fall on a record start. Same container, inverted assumption. The replacement
-   now runs on device and is verified on a T4. The result worth stating: speculate at every byte
-   offset, and if the surviving offsets *tile* the buffer they **are** the record chain, by
-   induction — which is O(1) per record and parallel, so BAM's serial reconcile phase disappears
-   rather than shrinking. Swept over 399 million candidate offsets on four real files, the
-   validator produced **zero false positives**.
-   [`docs/bcf-boundaries.md`](docs/bcf-boundaries.md). What is left for BCF is turning those
-   boundaries into device-resident columns, as BAM already does.
-3. **A CPU reference for every kernel.** It is the correctness oracle: GPU output is diffed
-   against it, and it is the only path testable without renting a VM.
+The load-bearing rule: **device memory and streams live in `fritillaria-cuda` and nowhere else.**
+No raw pointer or device-tied lifetime escapes into the format crates — they depend on a trait
+in `fritillaria-core` and never name a concrete backend. That is what lets a format crate hand
+back device-resident columns while remaining compilable with no GPU in sight.
 
-Verification is not optional. Every codec must check each block's CRC32 and `ISIZE` and fail on
-mismatch — a silently corrupt read in a genomics pipeline is worse than a slow one.
-
-See [CLAUDE.md](CLAUDE.md) for architecture, format invariants, and the remote-GPU workflow.
+`CudaCodec::with_context` allocates in a **caller-supplied** context, and `ready_event` lets a
+consumer on its own stream order against inflate completion without a host synchronise. A
+library that insisted on owning the context could not be embedded in someone else's pipeline.
 
 ## License
 
@@ -305,13 +245,13 @@ vendored/ours split per crate.
 | | Licence |
 |---|---|
 | Vendored crates, unmodified | MIT |
-| `fritillaria`, `fritillaria-cuda` | Apache-2.0 |
-| `fritillaria-{core,bgzf,bam,bcf}` | `Apache-2.0 AND MIT` — they contain both |
+| `fritillaria`, `fritillaria-cuda`, `fritillaria-text` | Apache-2.0 |
+| `fritillaria-{core,bgzf,bam,bcf,fastq,fasta}` | `Apache-2.0 AND MIT` — they contain both |
 
 MIT code may be redistributed inside an Apache-2.0 work; the reverse is not, so nothing here can
 be contributed back upstream to noodles without relicensing it.
 
-Note also that the `nvcomp` feature dlopens NVIDIA's nvCOMP at runtime; it is proprietary,
-licensed separately under NVIDIA's own terms, and is neither vendored nor redistributed here.
-Building or using that feature means obtaining nvCOMP yourself. Every other path — including the
-CUDA fallback codec — is Apache-2.0 and MIT all the way down.
+The `nvcomp` feature dlopens NVIDIA's nvCOMP at runtime. It is proprietary, licensed separately
+under NVIDIA's own terms, and is neither vendored nor redistributed here — using that feature
+means obtaining nvCOMP yourself. Every other path, including the CUDA fallback codec, is
+Apache-2.0 and MIT all the way down.
