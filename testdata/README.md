@@ -381,3 +381,17 @@ ambiguity codes in some assemblies. 2-bit packing is not implemented partly
 because nothing here could catch it going wrong, and
 `every_base_is_a_nucleotide_code` fails if this file is ever regenerated from
 something that would.
+
+## Index fixtures
+
+`htslib_multiblock.bam.bai` — written by `samtools index`, so it is htslib's own
+index rather than one of ours.
+
+```bash
+samtools index testdata/htslib_multiblock.bam
+```
+
+It exists for `fritillaria-bgzf/tests/seek.rs`, which runs a real region query
+through the codec-driven reader and compares it against the same query through
+the vendored one. Without `bgzf::io::Seek` that path did not exist at all and
+indexed access fell back to the CPU reader entirely.

@@ -18,7 +18,7 @@
 //! while noodles does the record parsing — and the same holds for BCF,
 //! `bgzip`ped VCF, and anything tabix-indexed.
 
-use std::io::{self, BufRead, Read};
+use std::io::{self, BufRead, Read, Seek, SeekFrom};
 
 use fritillaria_core::{BlockCodec, BlockSpan, Error, InflateBatch, MAX_BLOCK_SIZE};
 
@@ -224,6 +224,78 @@ impl<R: Read, C: BlockCodec> BgzfReader<R, C> {
     }
 }
 
+impl<R: Read + Seek, C: BlockCodec> BgzfReader<R, C> {
+    /// Repositions the reader to a virtual position.
+    ///
+    /// The upper 48 bits name a block by its offset in the compressed stream;
+    /// the lower 16 name a byte inside that block once inflated. Both halves
+    /// matter: seeking to the block is a file seek, and seeking *within* it
+    /// requires the block to be inflated first, which is why this cannot be a
+    /// plain `io::Seek` on the inner reader.
+    ///
+    /// Every batching field is reset, not adjusted. A carry from before the
+    /// seek describes bytes at the old position, and keeping it would prepend
+    /// them to the new batch — the kind of error that produces plausible
+    /// records from the wrong part of the file.
+    pub fn seek_to(&mut self, pos: crate::VirtualPosition) -> io::Result<crate::VirtualPosition> {
+        let (compressed, uncompressed) = (pos.compressed(), pos.uncompressed());
+
+        self.inner.seek(SeekFrom::Start(compressed))?;
+
+        self.batch_offset = compressed;
+        self.compressed.clear();
+        self.carry.clear();
+        self.spans.clear();
+        self.inflated.clear();
+        self.cursor = 0;
+        self.inner_exhausted = false;
+
+        if !self.load_batch()? {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!("no BGZF block at compressed offset {compressed}"),
+            ));
+        }
+
+        // `load_batch` may have skipped leading empty blocks, so the block the
+        // caller named is not necessarily the first one loaded. Find where it
+        // actually starts.
+        let index = self
+            .spans
+            .iter()
+            .position(|span| span.compressed_offset == compressed)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("compressed offset {compressed} is not a block boundary"),
+                )
+            })?;
+        let block_start = self.inflated.offsets()[index];
+        let block_end = self.inflated.offsets()[index + 1];
+
+        // Bounded by *this block*, not by the batch. Checking against the batch
+        // is the tempting mistake and it is silently wrong: a batch holds up to
+        // 256 blocks, so an out-of-range uncompressed offset lands in a later
+        // block and yields plausible bytes from the wrong record. The header
+        // block of `testdata/htslib_multiblock.bam` inflates to 223 bytes, so
+        // an offset of 250 is invalid — and with the batch-wide check it
+        // resolved 27 bytes into the next block instead of erroring.
+        let cursor = block_start + usize::from(uncompressed);
+        if cursor > block_end {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "uncompressed offset {uncompressed} is past the end of the {} byte block at {compressed}",
+                    block_end - block_start
+                ),
+            ));
+        }
+        self.cursor = cursor;
+
+        Ok(pos)
+    }
+}
+
 fn to_io(err: Error) -> io::Error {
     match err {
         Error::Io(e) => e,
@@ -271,6 +343,44 @@ mod trait_impls {
     // No methods of its own: the marker that makes every format crate here
     // accept this reader.
     impl<R: Read, C: BlockCodec> crate::io::BufRead for BgzfReader<R, C> {}
+
+    // Indexed access. Without this a region query — `bam::io::IndexedReader`,
+    // `bcf`'s, anything tabix-driven — cannot use this reader at all and falls
+    // back to the vendored CPU one, which quietly gives up the GPU for exactly
+    // the workloads that read least of a file.
+    impl<R: super::Seek + Read, C: BlockCodec> crate::io::Seek for BgzfReader<R, C> {
+        fn seek_to_virtual_position(
+            &mut self,
+            pos: crate::VirtualPosition,
+        ) -> super::io::Result<crate::VirtualPosition> {
+            self.seek_to(pos)
+        }
+
+        fn seek_with_index(
+            &mut self,
+            index: &crate::gzi::Index,
+            pos: super::SeekFrom,
+        ) -> super::io::Result<u64> {
+            match pos {
+                super::SeekFrom::Start(offset) => {
+                    // gzi maps an *uncompressed* file offset to the virtual
+                    // position of the block containing it. That is what makes
+                    // `bgzip -b` work on a plain bgzipped file with no format
+                    // index of its own.
+                    let virtual_position = index.query(offset)?;
+                    self.seek_to(virtual_position)?;
+                    Ok(offset)
+                }
+                // Matching the vendored reader, which does the same. Neither
+                // End nor Current is expressible without knowing the
+                // uncompressed length, which the index does not carry.
+                other => Err(super::io::Error::new(
+                    super::io::ErrorKind::Unsupported,
+                    format!("only SeekFrom::Start is supported, got {other:?}"),
+                )),
+            }
+        }
+    }
 }
 
 #[cfg(test)]
