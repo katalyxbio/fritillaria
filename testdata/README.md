@@ -395,3 +395,34 @@ It exists for `fritillaria-bgzf/tests/seek.rs`, which runs a real region query
 through the codec-driven reader and compares it against the same query through
 the vendored one. Without `bgzf::io::Seek` that path did not exist at all and
 indexed access fell back to the CPU reader entirely.
+
+## Text fixtures
+
+Three formats from three different writers, which is the point: a scanner tested
+against one tool's output tests that tool's habits as much as the format.
+
+```bash
+samtools view -h testdata/htslib_multiblock.bam > testdata/reads.sam
+bcftools view testdata/giab_hg002.bcf          > testdata/calls.vcf
+curl -s "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=nuccore\
+&id=NC_001416.1&rettype=gff3&retmode=text"     -o testdata/lambda.gff3
+```
+
+| File | Writer | Header lines | Records | Fields |
+|---|---|---|---|---|
+| `reads.sam` | samtools | 4 | 4,000 | 12 |
+| `calls.vcf` | bcftools | 235 | 275 | 10 |
+| `lambda.gff3` | NCBI | 5 | 309 | 9 |
+
+**`reads.sam` carries a specific trap on purpose.** `"` is Phred+33 Q1, so it
+appears throughout the quality strings — and a scanner that treats it as a quote
+character, as a CSV parser would, reports 1,956 phantom "tabs inside quotes"
+here. There is no quoting in SAM, VCF, BED or GFF3;
+`the_sam_fixture_still_contains_the_quote_bytes_that_misled_the_first_scan`
+fails if the fixture is ever regenerated without them.
+
+**No BED or GTF fixture.** Both are the same shape — newline-delimited records,
+tab-delimited fields, `#` comments — and `Dialect::BED` exists, but nothing here
+exercises them. GTF is the one format of the five that really quotes, inside its
+final attributes column; the spec forbids a tab there, and that is reasoning
+from the spec rather than a measurement.

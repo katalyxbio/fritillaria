@@ -7,6 +7,7 @@ members = [
     "crates/fritillaria-bam",
     "crates/fritillaria-bcf",
     "crates/fritillaria-cuda",
+    "crates/fritillaria-text",
     # Derived from noodles (MIT, (c) 2018 Michael Macias); see VENDORED.md.
     "crates/fritillaria-bed",
     "crates/fritillaria-cram",
@@ -38,6 +39,7 @@ fritillaria-bgzf = { path = "crates/fritillaria-bgzf", version = "0.51.0" }
 fritillaria-bam = { path = "crates/fritillaria-bam", version = "0.95.0" }
 fritillaria-bcf = { path = "crates/fritillaria-bcf", version = "0.91.0" }
 fritillaria-cuda = { path = "crates/fritillaria-cuda", version = "0.0.0" }
+fritillaria-text = { path = "crates/fritillaria-text", version = "0.0.0" }
 
 fritillaria-bed = { path = "crates/fritillaria-bed", version = "0.39.0" }
 fritillaria-cram = { path = "crates/fritillaria-cram", version = "0.99.0" }

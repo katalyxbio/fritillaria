@@ -1,0 +1,22 @@
+[package]
+name = "fritillaria-text"
+description = "Line and field discovery for tab-delimited genomic text."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+fritillaria-core.workspace = true
+memchr.workspace = true
+
+[dev-dependencies]
+fritillaria-core = { workspace = true, features = ["testing"] }
+# The oracles: independently written parsers for the same three files.
+fritillaria-gff.workspace = true
+fritillaria-sam.workspace = true
+fritillaria-vcf.workspace = true
+
+[lints]
+workspace = true

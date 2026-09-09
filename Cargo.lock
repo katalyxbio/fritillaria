@@ -630,6 +630,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "fritillaria-text"
+version = "0.0.0"
+dependencies = [
+ "fritillaria-core",
+ "fritillaria-gff",
+ "fritillaria-sam",
+ "fritillaria-vcf",
+ "memchr",
+]
+
+[[package]]
 name = "fritillaria-util"
 version = "0.85.0"
 dependencies = [
