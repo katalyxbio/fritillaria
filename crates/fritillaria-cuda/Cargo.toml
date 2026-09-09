@@ -30,6 +30,7 @@ fritillaria-core.workspace = true
 # holding its columns as opaque `DeviceBuffer`s. No cycle: `-bam` depends only
 # on `-core`.
 fritillaria-bam.workspace = true
+fritillaria-bcf.workspace = true
 cudarc = { workspace = true, optional = true }
 libloading = { workspace = true, optional = true }
 

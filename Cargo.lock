@@ -195,6 +195,7 @@ dependencies = [
  "crc32fast",
  "cudarc",
  "fritillaria-bam",
+ "fritillaria-bcf",
  "fritillaria-bgzf",
  "fritillaria-core",
  "libloading",

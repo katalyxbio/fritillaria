@@ -19,6 +19,12 @@
 //!   already-decompressed data and as the simplest end-to-end NVRTC check.
 //! - `kernels/gather.cu` — restages BGZF payloads at aligned offsets for
 //!   nvCOMP. Only used by the `nvcomp` feature.
+//! - `kernels/bam_decode.cu` — BAM record boundary discovery and columnar
+//!   field decode.
+//! - `kernels/bcf_scan.cu` — BCF record boundary discovery. A different shape
+//!   from BAM's on purpose: BAM speculates at BGZF block starts because htslib
+//!   ends a block rather than splitting an alignment, and `bcf_write` does not,
+//!   so BCF speculates at every byte offset instead. See [`bcf`].
 //!
 //! # Two GPU codecs
 //!
@@ -31,6 +37,7 @@
 mod backend;
 
 pub mod bam;
+pub mod bcf;
 
 #[cfg(feature = "nvcomp")]
 pub mod nvcomp;
@@ -38,6 +45,7 @@ pub mod nvcomp;
 #[cfg(feature = "cuda")]
 pub use backend::{CudaAlloc, CudaContext, InflateTimings};
 pub use bam::{BamDecoder, DecodeTimings};
+pub use bcf::BcfScanner;
 
 #[cfg(feature = "nvcomp")]
 pub use nvcomp::{NvcompCodec, NvcompContext};
@@ -67,6 +75,11 @@ pub const INFLATE_KERNEL_SRC: &str = include_str!("../kernels/inflate.cu");
 ///
 /// The CPU reference for these is `fritillaria_bam::blocked`; see [`bam`].
 pub const BAM_DECODE_KERNEL_SRC: &str = include_str!("../kernels/bam_decode.cu");
+
+/// Source of the BCF boundary-scan kernels, compiled at runtime by NVRTC.
+///
+/// The CPU reference for these is `fritillaria_bcf::speculative`; see [`bcf`].
+pub const BCF_SCAN_KERNEL_SRC: &str = include_str!("../kernels/bcf_scan.cu");
 
 /// Source of the payload-restaging kernel, compiled at runtime by NVRTC.
 ///

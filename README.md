@@ -71,8 +71,8 @@ carry-the-partial-record loop a real consumer has to write.
 | `fritillaria-core` | Types, errors, `VirtualOffset`, the `BlockCodec` and `DeviceBlockCodec` seams |
 | `fritillaria-bgzf` | Block discovery, CPU codec, writer, batched `BgzfReader`, device-resident `DeviceBgzfReader` |
 | `fritillaria-bam` | Header, record boundary scan, columnar `RecordBatch`, zero-copy `Record`, aux tags, device columns |
-| `fritillaria-bcf` | Header + dictionaries, record boundary scan, BCF2 typed values, zero-copy `Record` (host only so far) |
-| `fritillaria-cuda` | DEFLATE inflate + CRC32 kernels, device-resident output, nvCOMP codec, columnar BAM decode — verified on a Tesla T4 |
+| `fritillaria-bcf` | Header + dictionaries, record boundary scan (host **and** device), BCF2 typed values, zero-copy `Record` |
+| `fritillaria-cuda` | DEFLATE inflate + CRC32 kernels, device-resident output, nvCOMP codec, columnar BAM decode, BCF boundary scan — verified on a Tesla T4 |
 | `fritillaria` | Facade and backend selection (nvCOMP → our kernel → CPU) |
 
 Two GPU codecs sit behind the same traits with the same mandatory verification, so choosing
@@ -195,9 +195,9 @@ upload, further codec work buys little. The effort belongs downstream of it:
 
 1. **Host-side block discovery**, which is now the likely bottleneck: a sequential walk of BGZF
    headers that measures 2.36s standalone against 0.86s of GPU inflate.
-2. **BCF on the device.** Host parsing works and is validated against `bcftools`, and
-   `noodles_bcf` already reads through this reader with no new code. The device-side boundary
-   scan is the open piece — see below. Then `bgzip`ped VCF and FASTQ.
+2. **Columnar BCF decode on device.** Parsing, and now boundary discovery, work end to end;
+   turning the boundaries into device-resident columns is what BAM has and BCF does not. Then
+   `bgzip`ped VCF and FASTQ.
 3. **GPU-side BGZF compression**, so a tool that produces records on-device can write them back
    without paying the transfer the read path just removed.
 
@@ -246,11 +246,13 @@ Three things shape everything else:
    starting a fresh block rather than splitting an alignment, so a block start is almost always a
    record start — but `bcf_write` packs blocks full, and **0 of 56** interior block boundaries in
    the BCF fixture fall on a record start. Same container, inverted assumption. The replacement
-   has a host reference and a result worth stating: speculate at every byte offset, and if the
-   surviving offsets *tile* the buffer they **are** the record chain, by induction — which is
-   O(1) per record and parallel, so BAM's serial reconcile phase disappears rather than shrinking.
-   Swept over 399 million candidate offsets on four real files, the validator produced **zero
-   false positives**. [`docs/bcf-boundaries.md`](docs/bcf-boundaries.md).
+   now runs on device and is verified on a T4. The result worth stating: speculate at every byte
+   offset, and if the surviving offsets *tile* the buffer they **are** the record chain, by
+   induction — which is O(1) per record and parallel, so BAM's serial reconcile phase disappears
+   rather than shrinking. Swept over 399 million candidate offsets on four real files, the
+   validator produced **zero false positives**.
+   [`docs/bcf-boundaries.md`](docs/bcf-boundaries.md). What is left for BCF is turning those
+   boundaries into device-resident columns, as BAM already does.
 3. **A CPU reference for every kernel.** It is the correctness oracle: GPU output is diffed
    against it, and it is the only path testable without renting a VM.
 

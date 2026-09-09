@@ -433,8 +433,28 @@ impl<'a> Record<'a> {
                 ),
             ));
         }
-        for field in self.formats() {
+        // The genotype block must be consumed exactly too. Iterating the fields
+        // only proves none of them runs *past* l_indiv; fields that stop short
+        // leave unclaimed bytes, which is the same disagreement between framing
+        // and contents that the check above catches on the shared block.
+        //
+        // Found by writing the kernel: `kernels/bcf_scan.cu` asserted this and
+        // the reference did not, so they would have disagreed on a record no
+        // real file contains. Being a differential oracle means the strictness
+        // has to match in both directions.
+        let mut fields = self.formats();
+        for field in &mut fields {
             field?;
+        }
+        let at = fields.position();
+        if at != self.buf.len() {
+            return Err(malformed(
+                at,
+                format!(
+                    "genotype fields end at {at} but the record ends at {}",
+                    self.buf.len()
+                ),
+            ));
         }
         Ok(())
     }
@@ -543,6 +563,18 @@ pub struct FormatFields<'a> {
     remaining: usize,
     samples: usize,
     end: usize,
+}
+
+impl FormatFields<'_> {
+    /// Where the walk has reached — the end of the last field yielded, or the
+    /// start of the genotype block before any.
+    ///
+    /// [`Record::validate`] needs this: iterating the fields proves none runs
+    /// past `l_indiv`, but not that together they fill it.
+    #[must_use]
+    pub const fn position(&self) -> usize {
+        self.pos
+    }
 }
 
 impl<'a> Iterator for FormatFields<'a> {
@@ -887,6 +919,32 @@ mod tests {
         raw[8 + 18..8 + 20].copy_from_slice(&3u16.to_le_bytes());
         let record = Record::new(&raw).unwrap();
         assert!(record.validate().is_err());
+    }
+
+    #[test]
+    fn validate_catches_a_genotype_block_the_fields_do_not_fill() {
+        // The mirror of the l_shared check, and it was missing until the CUDA
+        // translation asserted it and the reference did not. Iterating the
+        // FORMAT fields proves none runs *past* l_indiv; it says nothing about
+        // them stopping short and leaving bytes no field claims.
+        let mut raw = simple();
+        let l_indiv = u32::from_le_bytes(raw[4..8].try_into().unwrap());
+        raw[4..8].copy_from_slice(&(l_indiv + 1).to_le_bytes());
+        raw.push(0);
+
+        let record = Record::new(&raw).unwrap();
+        assert_eq!(
+            record.format_count(),
+            1,
+            "the fields themselves are still well-formed"
+        );
+        for field in record.formats() {
+            field.expect("no field runs past the block");
+        }
+        assert!(
+            record.validate().is_err(),
+            "a byte no FORMAT field claims must be caught"
+        );
     }
 
     #[test]

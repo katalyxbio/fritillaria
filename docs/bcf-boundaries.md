@@ -141,28 +141,59 @@ chain whether or not validation ran.
 
 ## Status
 
+**Host reference and kernel both done, verified on a T4.**
+
 `crates/fritillaria-bcf/src/speculative.rs` implements all four phases on the host —
-`sieve`, `validate`, `prove_tiling`, and the serial fallback — as the CPU reference a kernel
-would be diffed against. Each phase is a separate public function so it maps to one launch.
+`sieve`, `validate`, `prove_tiling`, and the serial fallback — as the CPU reference the kernels
+are diffed against. Each phase is a separate public function so it maps to one launch.
 
-Validated against `scan_records` on every fixture, and against 120 truncations of a real file
-landing inside a record, since a BCF batch almost always ends mid-record. Four deliberate
-mutations of the proof were each confirmed to turn the suite red; three of them survived the
-first attempt, and closing that is why the tests for anchoring, for the trailing bytes, and for
-stage 2 exist at all.
+`crates/fritillaria-cuda/kernels/bcf_scan.cu` is the device translation, launched by
+`fritillaria_cuda::BcfScanner`. On a T4 it reproduces the host reference exactly on all three
+fixtures — same boundaries, same tail, same survivor counts — and the tiling proof held on every
+batch, including at seams driven one block at a time.
 
-**The kernel is not written.** Nothing device-side has been built for BCF, and neither has the
-columnar decode that would follow it.
+### The division of labour, and the transfer it accepts
+
+| phase | where | why |
+|---|---|---|
+| sieve | device, one thread per byte | touches every byte of the batch |
+| validate | device, one thread per survivor | proportional to the record, runs only on survivors |
+| sort + prove | **host**, over a few thousand offsets | microseconds anywhere |
+| fallback walk | device, one thread | so a failure costs a slow pass, not a D2H of the batch |
+
+The offsets come back to the host — tens of kilobytes against the batch's tens of megabytes.
+That is a transfer this project normally refuses, and the distinction is worth stating: the D2H
+the design exists to delete is the *inflated payload*, which scales with the data. This one
+scales with the record count. It stops being the right call the moment a device-side columnar
+BCF decode exists to consume the offsets in VRAM, and not before — building that plumbing for a
+consumer that does not exist is how untested code ships.
+
+The fallback walk is the exception and stays on device deliberately: copying the batch back to
+walk it on the host would pay exactly the transfer this library removes.
+
+### What the kernel work found
+
+**`Record::validate` was too lax, and the kernel caught it.** The reference iterated the FORMAT
+fields — proving none runs *past* `l_indiv` — but never checked that together they fill it. The
+CUDA translation asserted the stricter thing, so the two would have disagreed on a record no real
+file contains. Being a differential oracle means the strictness has to match in both directions;
+the reference now checks it and a mutation confirms the check bites.
+
+**`with_blocks_per_batch` budgets *compressed* bytes.** At 64 KiB per block that is about three
+real blocks on a BAM at 3.37x, and about twenty on genotype BCF at 20x. Asking for 8 on the
+182 KB panel fixture reads the whole file in one batch — which is how a GPU test asserting
+"several batches" failed on a rented VM for a reason that had nothing to do with the GPU.
+`fritillaria-bcf/tests/device_reader.rs` now drives the same loop through `HostDeviceCodec`, so
+that class of mistake is caught in a second on a machine with no CUDA.
 
 ## What to measure next
 
-The host figures characterise the *validator*, not the kernel. Two things still need a GPU:
+Correctness is established; performance is not. Nothing here has been timed:
 
-- **Whether the sieve is bandwidth-bound.** One thread per byte over a 16 MB batch, each reading
-  32 bytes, is a heavily overlapping read pattern; the useful comparison is against the 0.86s
-  nvCOMP spends inflating the same data.
-- **How often the tiling actually holds on device batches**, which end mid-record by
-  construction. The host tests say it holds at every truncation tried, but a batch boundary is
-  the one place this design degrades to the thing it replaced, and a silent fallback performs
-  exactly like the old design while reporting success. `Proof` exists so that a driver can count
-  it rather than assume.
+- **Whether the sieve is bandwidth-bound.** One thread per byte, each reading 32, is a heavily
+  overlapping pattern that should sit in cache — but the useful comparison is against the 0.86s
+  nvCOMP spends inflating the same data on an L4, and that number does not exist yet.
+- **What the fallback actually costs**, so the cost of a false positive is known rather than
+  assumed rare-and-therefore-fine.
+- **Whether the offsets round trip matters.** It is small, but it is a host synchronisation per
+  batch, and BAM's decode showed per-batch overhead dominating the phase it lives in.

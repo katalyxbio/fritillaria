@@ -96,6 +96,19 @@ impl<R: Read, C: DeviceBlockCodec> DeviceBgzfReader<R, C> {
     ///
     /// This is a floor, not a cap: a record larger than the batch grows the
     /// window until it fits.
+    ///
+    /// **It budgets *compressed* bytes**, at the 64 KiB a block occupies in the
+    /// worst case, so the blocks actually read scale with how well the data
+    /// compresses. On a BAM at the 3.37x measured on real WGS that is roughly
+    /// three blocks per unit; on a BCF of genotypes, which compresses **20x**,
+    /// it is closer to twenty. Asking for 8 on a 182 KB BCF reads the whole
+    /// file in one batch.
+    ///
+    /// That surprised a test rather than a user, and it is not a bug — a fixed
+    /// compressed budget is what bounds memory, which is the thing worth
+    /// bounding. But it does mean the name is a request, not a count, and that
+    /// a caller sizing batches for a target record count cannot get there from
+    /// here without knowing the ratio.
     #[must_use]
     pub fn with_blocks_per_batch(mut self, blocks: usize) -> Self {
         self.blocks_per_batch = blocks.max(1);
