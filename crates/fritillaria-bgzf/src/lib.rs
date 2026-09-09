@@ -38,13 +38,16 @@ pub mod read;
 pub mod write;
 
 pub use block::{BlockHeader, EOF_BLOCK, is_eof_block};
-pub use cpu::CpuCodec;
+pub use cpu::{CpuCodec, CpuCompressor};
 pub use device_read::{DeviceBatch, DeviceBgzfReader};
 pub use discover::{BlockDiscovery, discover_blocks};
 #[cfg(any(test, feature = "testing"))]
 pub use host_device::HostDeviceCodec;
 pub use read::{BgzfReader, DEFAULT_BLOCKS_PER_BATCH};
-pub use write::{BgzfWriter, DEFAULT_PAYLOAD_SIZE, MAX_DEFLATE_STREAM, frame_block};
+pub use write::{
+    BgzfWriter, DEFAULT_PAYLOAD_SIZE, MAX_DEFLATE_STREAM, STORED_BLOCK_HEADER, frame_block,
+    store_block,
+};
 
 // --- vendored ---------------------------------------------------------------
 //

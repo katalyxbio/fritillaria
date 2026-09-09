@@ -6,9 +6,10 @@
 
 use std::io::{self, Write};
 
-use fritillaria_core::{Error, MAX_BLOCK_SIZE, Result};
+use fritillaria_core::{Error, MAX_BLOCK_SIZE, MAX_COMPRESSIBLE_PAYLOAD, Result};
 
 use crate::block::{EOF_BLOCK, FIXED_HEADER_SIZE, TRAILER_SIZE};
+use crate::cpu::CpuCompressor;
 
 /// Default uncompressed bytes per block.
 ///
@@ -21,8 +22,6 @@ pub const DEFAULT_PAYLOAD_SIZE: usize = 0xff00;
 const XLEN: usize = 6;
 /// Header size for the headers this writer emits.
 pub const HEADER_SIZE: usize = FIXED_HEADER_SIZE + XLEN;
-/// Largest deflate payload that still leaves room for framing.
-const MAX_PAYLOAD: usize = MAX_BLOCK_SIZE - HEADER_SIZE - TRAILER_SIZE;
 
 /// Largest **deflate stream** that still fits a block once framed.
 ///
@@ -30,6 +29,46 @@ const MAX_PAYLOAD: usize = MAX_BLOCK_SIZE - HEADER_SIZE - TRAILER_SIZE;
 /// must come in under — not [`MAX_BLOCK_SIZE`], and not the payload size. It is
 /// the number [`frame_block`] rejects against.
 pub const MAX_DEFLATE_STREAM: usize = MAX_BLOCK_SIZE - HEADER_SIZE - TRAILER_SIZE;
+
+/// Bytes a DEFLATE stored block adds to its payload: `BFINAL`/`BTYPE`, `LEN`,
+/// `NLEN`.
+pub const STORED_BLOCK_HEADER: usize = 5;
+
+// `fritillaria-core` states the chunk limit that makes a compressor's
+// one-block-out-per-block-in guarantee unconditional, but it cannot see the
+// framing sizes that limit is derived from — it has no BGZF dependency, by
+// design. So the derivation is checked here, where both halves are visible, and
+// at compile time: a change to either header size that silently invalidated the
+// guarantee is the failure this catches.
+const _: () = assert!(MAX_COMPRESSIBLE_PAYLOAD + STORED_BLOCK_HEADER == MAX_DEFLATE_STREAM);
+
+/// Encodes `payload` as a single uncompressed DEFLATE stored block.
+///
+/// The escape hatch for input that compresses to *more* than it started as, and
+/// the reason a compressor can promise one output block per input block: a
+/// stored block is exactly `payload.len() + 5` bytes, with no data-dependent
+/// term, so a chunk of at most [`MAX_COMPRESSIBLE_PAYLOAD`] always frames.
+/// General-purpose compressors have no such bound — miniz_oxide at level 6
+/// expands random input by 15 bytes, because it emits three stored blocks rather
+/// than one — which is enough to push a maximal chunk past the cap.
+///
+/// `payload` must be at most 65535 bytes, the largest `LEN` a stored block can
+/// declare. Longer input is a caller error and is not split here, because
+/// splitting is exactly what the one-to-one guarantee forbids.
+///
+/// # Panics
+///
+/// If `payload` exceeds 65535 bytes.
+pub fn store_block(payload: &[u8], out: &mut Vec<u8>) {
+    let len = u16::try_from(payload.len()).expect("a stored block declares its length in a u16");
+
+    // BFINAL = 1, BTYPE = 00. The three bits are the low bits of the first
+    // byte and stored blocks are byte-aligned, so no padding is needed.
+    out.push(0x01);
+    out.extend_from_slice(&len.to_le_bytes());
+    out.extend_from_slice(&(!len).to_le_bytes());
+    out.extend_from_slice(payload);
+}
 
 /// Wraps an already-compressed deflate stream as one BGZF block.
 ///
@@ -51,9 +90,10 @@ pub const MAX_DEFLATE_STREAM: usize = MAX_BLOCK_SIZE - HEADER_SIZE - TRAILER_SIZ
 /// Returns [`Error::Malformed`] if the stream is too large to frame within
 /// BGZF's 64 KiB block cap. That is a real possibility rather than a formality:
 /// deflate can expand incompressible input, and nvCOMP's own worst-case output
-/// for a full block is 2.26x the input. The caller decides what to do about it —
-/// [`BgzfWriter::write_block`] splits the payload and retries, which a device
-/// batch cannot do mid-launch and must handle by re-compressing the offenders.
+/// for a full block is 2.26x the input. The caller decides what to do about it:
+/// [`CpuCompressor`] falls back to [`store_block`], which has a fixed 5-byte
+/// overhead and so always fits, and a device batch — which cannot re-run one
+/// chunk mid-launch — must re-compress the offenders the same way.
 pub fn frame_block(
     out: &mut Vec<u8>,
     deflate_stream: &[u8],
@@ -126,44 +166,21 @@ impl<W: Write> BgzfWriter<W> {
     /// finer seek granularity at the cost of ratio.
     #[must_use]
     pub fn with_payload_size(mut self, size: usize) -> Self {
-        self.payload_size = size.clamp(1, MAX_PAYLOAD);
+        self.payload_size = size.clamp(1, MAX_COMPRESSIBLE_PAYLOAD);
         self
     }
 
     /// Compresses `payload` as exactly one BGZF block.
     ///
-    /// An empty payload is legal and produces a valid empty block.
+    /// An empty payload is legal and produces a valid empty block. A payload
+    /// larger than [`MAX_COMPRESSIBLE_PAYLOAD`] is an error rather than
+    /// something to split: the caller chose that boundary, and in a BAM it is a
+    /// record boundary the reader's parallelism depends on.
     pub fn write_block(&mut self, payload: &[u8]) -> Result<()> {
-        if payload.len() > MAX_PAYLOAD {
-            return Err(Error::Malformed {
-                format: "bgzf",
-                position: 0,
-                reason: format!(
-                    "block payload {} exceeds maximum {MAX_PAYLOAD}",
-                    payload.len()
-                ),
-            });
-        }
-
-        let compressed = miniz_oxide::deflate::compress_to_vec(payload, self.level);
-
-        // Deflate can expand pathologically incompressible input past the cap.
-        // Rather than emit an invalid block, split and retry. An empty payload
-        // still compresses to a few bytes, so this always terminates.
-        if HEADER_SIZE + compressed.len() + TRAILER_SIZE > MAX_BLOCK_SIZE {
-            let mid = payload.len() / 2;
-            self.write_block(&payload[..mid])?;
-            return self.write_block(&payload[mid..]);
-        }
-
         self.buf.clear();
-        frame_block(
-            &mut self.buf,
-            &compressed,
-            crc32fast::hash(payload),
-            payload.len() as u32,
-        )?;
-
+        CpuCompressor::new()
+            .with_level(self.level)
+            .compress_one(payload, &mut self.buf)?;
         self.inner.write_all(&self.buf)?;
         Ok(())
     }
@@ -258,7 +275,7 @@ mod tests {
     #[test]
     fn every_written_block_stays_within_the_64kib_cap() {
         // Incompressible input is the case that can push a block over the cap.
-        let mut data = vec![0u8; MAX_PAYLOAD];
+        let mut data = vec![0u8; MAX_COMPRESSIBLE_PAYLOAD];
         for (i, byte) in data.iter_mut().enumerate() {
             *byte = (i.wrapping_mul(2_654_435_761) >> 13) as u8;
         }
@@ -281,7 +298,11 @@ mod tests {
     #[test]
     fn rejects_oversized_single_block() {
         let mut writer = BgzfWriter::new(Vec::new());
-        assert!(writer.write_block(&vec![0u8; MAX_PAYLOAD + 1]).is_err());
+        assert!(
+            writer
+                .write_block(&vec![0u8; MAX_COMPRESSIBLE_PAYLOAD + 1])
+                .is_err()
+        );
     }
 
     /// The extracted seam frames a stream someone else compressed.

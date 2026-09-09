@@ -12,6 +12,7 @@
 //! Everything else is the backend seam, which is ours. See `VENDORED.md`.
 
 pub mod codec;
+pub mod compress;
 pub mod device;
 pub mod error;
 pub mod virtual_offset;
@@ -26,6 +27,7 @@ pub mod region;
 pub use self::{position::Position, region::Region};
 
 pub use codec::{BlockCodec, BlockSpan, InflateBatch};
+pub use compress::{BlockCompressor, CompressedBatch, MAX_COMPRESSIBLE_PAYLOAD};
 pub use device::{DeviceAlloc, DeviceBlockCodec, DeviceBuffer, DeviceInflateBatch};
 pub use error::{Error, Result};
 pub use virtual_offset::VirtualOffset;

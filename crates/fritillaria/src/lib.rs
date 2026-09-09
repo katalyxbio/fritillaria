@@ -116,8 +116,11 @@ pub use fritillaria_htsget as htsget;
 #[doc(inline)]
 pub use fritillaria_refget as refget;
 
-pub use fritillaria_bgzf::CpuCodec;
-pub use fritillaria_core::{BlockCodec, BlockSpan, Error, InflateBatch, Result, VirtualOffset};
+pub use fritillaria_bgzf::{CpuCodec, CpuCompressor};
+pub use fritillaria_core::{
+    BlockCodec, BlockCompressor, BlockSpan, CompressedBatch, Error, InflateBatch,
+    MAX_COMPRESSIBLE_PAYLOAD, Result, VirtualOffset,
+};
 
 /// Which decompression backend to use.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

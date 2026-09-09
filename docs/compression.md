@@ -179,6 +179,79 @@ output alignment is 8 and that scratch is linear, so a future nvCOMP that
 relaxed either would fail loudly and the compaction pass could be deleted on
 evidence.
 
+## The CPU reference, built and measured 2026-09-10
+
+`fritillaria_bgzf::CpuCompressor` implements `BlockCompressor`: it takes a
+concatenated buffer plus block boundaries — exactly what a `BlockCodec` hands
+back — and produces a ready-to-write BGZF byte stream. It is the oracle the
+device path is diffed against, and the local baseline for the ratio.
+
+Every committed fixture, inflated and recompressed at miniz level 6, against the
+htslib bytes that came in:
+
+| Fixture | htslib | ours | vs htslib | our ratio |
+|---|---|---|---|---|
+| `pacbio_hifi.bam` | 151,245 | 160,291 | **+6.0%** | 3.76x |
+| `ont_ultralong.bam` | 231,261 | 237,464 | +2.7% | 1.67x |
+| `htslib_multiblock.bam` | 466,239 | 471,795 | +1.2% | 1.74x |
+| `kg_phase3.bcf` | 182,663 | 187,672 | +2.7% | 19.76x |
+| `giab_hg002.bcf` | 15,492 | 15,649 | +1.0% | 12.61x |
+
+**+1.0% to +6.0% behind libdeflate at the same nominal level**, which is the
+expected shape — libdeflate is genuinely better than zlib — and the number nvCOMP
+has to be read against. It is *asserted*, not printed: the test fails past +10%,
+because a compressor that quietly stopped compressing would otherwise pass every
+other check.
+
+### One block out per block in — and why it is a contract
+
+The compressor emits exactly one BGZF block per input chunk, and errors rather
+than splitting one that will not fit.
+
+**This protects the reader, not the writer.** htslib starts a new block rather
+than splitting a BAM record, which is what makes a block start almost always a
+record start — the property the GPU record scan leans on to get one independent
+chain per block instead of one serial chain per batch. A compressor that split
+an over-large chunk to make it fit would emit a file that is valid, reads
+correctly, and is *slower for us to read*, with nothing to indicate why. That is
+the worst kind of bug this project can ship, so the seam refuses instead.
+
+`BgzfWriter::write_block` used to do exactly the wrong thing here — split the
+payload and retry — and now delegates to the compressor.
+
+**Making the guarantee unconditional needed one measurement.** A general-purpose
+deflate has no bound on its output: miniz at level 6 expands random input by 15
+bytes, because it emits three stored blocks rather than one, and that is enough
+to push a maximal chunk past BGZF's 64 KiB whole-block cap. A hand-built DEFLATE
+stored block is exactly `len + 5` with no data-dependent term. So the fallback is
+to store, and the chunk limit is `65536 − 18 − 8 − 5 = 65505`
+(`MAX_COMPRESSIBLE_PAYLOAD`) — 5 bytes under what the format would allow a
+payload to be, and unreachable in practice since writers use 65280 anyway.
+
+Taking the smaller of deflate and stored is also free ratio on incompressible
+input, which is the case that would otherwise *cost* bytes rather than merely
+fail to save them.
+
+**The device path inherits all of this.** nvCOMP's worst case is 2.26x the chunk,
+far past the cap, and a kernel cannot re-run one chunk mid-launch — so it must
+detect over-cap blocks after the launch and re-emit them as stored blocks, which
+is precisely what `store_block` does. Same code, host side.
+
+### What the tests can and cannot do
+
+There is no byte oracle, so the net is three checks, and each one catches
+something the others do not. Verified by mutation:
+
+| Mutation | Caught by |
+|---|---|
+| never fall back to storing | one-block-per-chunk, at the maximal chunk |
+| always store (stopped compressing) | the ratio floor, and the EOF marker |
+| CRC over the compressed stream | round trip, and `samtools` |
+
+The third is the one worth naming: the gzip trailer checksums the bytes *going
+in*, so a device path must CRC before compressing, not after. It is an easy
+inversion to make and produces a file that only fails on read.
+
 ## What is still unmeasured
 
 Everything above about nvCOMP is **NVIDIA's claim, not our measurement.** The
@@ -191,20 +264,17 @@ comment. Before any of this is believed:
 2. **Throughput at level 4**, which is the level we would actually ship. The
    9.39 GB/s figure quoted for an H100 is presumably level 0 or 1, and does not
    transfer.
-3. **Whether the output is spec-valid BGZF that samtools accepts** — including
-   the 28-byte EOF block, or tools report truncation. This is the acceptance
-   bar and it is binary.
+3. ~~**Whether the output is spec-valid BGZF that samtools accepts**~~ — settled
+   for the *host* path on 2026-09-10: `samtools`/`bcftools` read every
+   recompressed fixture and report the same record counts, and re-framing a
+   fixture's trailing empty block reproduces the 28-byte EOF marker byte for
+   byte. The device path still has to clear the same bar, but the harness that
+   checks it now exists and runs locally.
 
 The memory table above *is* ours and needs no device — nvCOMP answers those
 queries on a machine with no driver, which is why they were measured before
 anything was built rather than discovered on a rented VM. Only the ratio and
 throughput columns need hardware.
-
-Note that unlike decompression, there is no byte-identity oracle available: two
-valid DEFLATE streams of the same input legitimately differ. The test has to be
-round-trip plus htslib acceptance plus a ratio floor, which is a weaker net than
-the read path enjoys — so the ratio floor needs to be an actual assertion, not a
-number in a report.
 
 ## The API, transcribed
 
