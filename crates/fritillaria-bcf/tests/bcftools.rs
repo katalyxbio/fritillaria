@@ -36,7 +36,8 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use fritillaria_bcf::{
-    Int, Kind, decode_genotype, header::parse_header, record::Record, scan_records,
+    Int, Kind, Proof, decode_genotype, header::parse_header, record::Record, scan_records,
+    scan_records_speculative,
 };
 use fritillaria_bgzf::{CpuCodec, discover_blocks};
 use fritillaria_core::{BlockCodec, InflateBatch};
@@ -765,4 +766,80 @@ fn a_flag_info_field_is_present_with_no_value() {
         .count();
     assert!(present > 0, "no record carries the flag");
     assert!(present < offsets.len(), "every record carries the flag");
+}
+
+// ---------------------------------------------------------------------------
+// The speculative scan
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_speculative_scan_agrees_with_the_serial_one_on_real_files() {
+    // The device-side design, exercised on the host against real bcftools
+    // output. Two separate claims, and the second is the interesting one:
+    // the boundaries must be identical, and they must have been established
+    // by the parallel tiling proof rather than by falling back to the walk.
+    // A silent fallback would be correct and would perform exactly like the
+    // serial design it replaces, so it has to be asserted, not assumed.
+    for name in ["kg_phase3.bcf", "giab_hg002.bcf", "giab_hg002_idx_gap.bcf"] {
+        let batch = inflate(name);
+        let buf = batch.data();
+        let header = parse_header(buf).unwrap();
+        let samples = u32::try_from(header.sample_count()).unwrap();
+        let contigs = u32::try_from(header.dictionary.contigs.len()).unwrap();
+
+        let (expected, expected_tail) = scan_records(buf, header.records_start).unwrap();
+        let scan = scan_records_speculative(buf, header.records_start, samples, contigs).unwrap();
+
+        assert_eq!(scan.offsets, expected, "{name}: boundaries");
+        assert_eq!(scan.tail, expected_tail, "{name}: tail");
+        assert_eq!(
+            scan.proof,
+            Proof::Tiled,
+            "{name}: the tiling proof must succeed, or the parallel design buys nothing"
+        );
+        assert_eq!(
+            scan.validated,
+            expected.len(),
+            "{name}: {} offsets survived validation against {} real records — \
+             any excess is a false positive and the number to watch",
+            scan.validated,
+            expected.len()
+        );
+    }
+}
+
+#[test]
+fn the_speculative_scan_handles_a_partial_record_at_every_truncation() {
+    // A BCF batch almost always ends mid-record, because bcftools packs BGZF
+    // blocks full. So the partial-tail path is the common case, not an edge
+    // case, and it has to keep tiling rather than fall back once per batch.
+    let batch = inflate("giab_hg002.bcf");
+    let buf = batch.data();
+    let header = parse_header(buf).unwrap();
+    let samples = u32::try_from(header.sample_count()).unwrap();
+    let contigs = u32::try_from(header.dictionary.contigs.len()).unwrap();
+
+    let (all, _) = scan_records(buf, header.records_start).unwrap();
+
+    // Cut inside each of the first 40 records, at three points apiece.
+    let mut cuts = 0;
+    for window in all.windows(2).take(40) {
+        let (start, end) = (window[0], window[1]);
+        for cut in [start + 1, start + (end - start) / 2, end - 1] {
+            let truncated = &buf[..cut];
+            let scan = scan_records_speculative(truncated, header.records_start, samples, contigs)
+                .unwrap();
+            let (expected, expected_tail) = scan_records(truncated, header.records_start).unwrap();
+
+            assert_eq!(scan.offsets, expected, "cut at {cut}");
+            assert_eq!(scan.tail, expected_tail, "cut at {cut}");
+            assert_eq!(
+                scan.tail, start,
+                "cut at {cut}: the tail must point at the record the cut lands in"
+            );
+            assert_eq!(scan.proof, Proof::Tiled, "cut at {cut}");
+            cuts += 1;
+        }
+    }
+    assert_eq!(cuts, 120, "every truncation must have been exercised");
 }

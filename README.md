@@ -246,7 +246,11 @@ Three things shape everything else:
    starting a fresh block rather than splitting an alignment, so a block start is almost always a
    record start — but `bcf_write` packs blocks full, and **0 of 56** interior block boundaries in
    the BCF fixture fall on a record start. Same container, inverted assumption. The replacement
-   is designed but unbuilt: [`docs/bcf-boundaries.md`](docs/bcf-boundaries.md).
+   has a host reference and a result worth stating: speculate at every byte offset, and if the
+   surviving offsets *tile* the buffer they **are** the record chain, by induction — which is
+   O(1) per record and parallel, so BAM's serial reconcile phase disappears rather than shrinking.
+   Swept over 399 million candidate offsets on four real files, the validator produced **zero
+   false positives**. [`docs/bcf-boundaries.md`](docs/bcf-boundaries.md).
 3. **A CPU reference for every kernel.** It is the correctness oracle: GPU output is diffed
    against it, and it is the only path testable without renting a VM.
 

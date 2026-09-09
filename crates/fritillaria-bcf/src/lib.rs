@@ -37,6 +37,7 @@
 
 pub mod header;
 pub mod record;
+pub mod speculative;
 pub mod typed;
 
 pub use header::{Dictionary, Header, parse_header};
@@ -44,6 +45,7 @@ pub use record::{
     Allele, FormatField, FormatFields, InfoFields, MIN_RECORD_SIZE, Record, SITE_CORE_SIZE,
     decode_genotype, looks_like_a_record, scan_records,
 };
+pub use speculative::{Proof, SpeculativeScan, scan_records_speculative};
 pub use typed::{Float, Floats, Int, Ints, Kind, Typed};
 
 /// BCF magic: the three characters `BCF`, with the version in the next two
