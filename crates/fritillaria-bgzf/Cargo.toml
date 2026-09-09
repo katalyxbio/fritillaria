@@ -29,8 +29,14 @@ miniz_oxide.workspace = true
 fritillaria-core = { workspace = true, features = ["testing"] }
 # Proves noodles format crates compose on top of our reader; see
 # tests/noodles_interop.rs. Dev-only: the library itself needs only bgzf.
+#
+# bcf and vcf are here for the claim that the *container* is the dividing line:
+# if that is right, a second BGZF format needs no new code from us, and the
+# test is what turns that from an argument into a fact.
 noodles-bam.workspace = true
+noodles-bcf.workspace = true
 noodles-sam.workspace = true
+noodles-vcf.workspace = true
 
 [lints]
 workspace = true

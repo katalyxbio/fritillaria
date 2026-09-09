@@ -1,12 +1,13 @@
 # Test fixtures
 
-Written by **htslib** (`samtools 1.16.1`), not by this crate. That is the entire
-point: every other fixture in the workspace comes from our own `BgzfWriter`, so
-a misunderstanding shared by our writer and reader would pass silently. These
-are the only files that can catch a systematically wrong reading of the spec.
+Written by **htslib** (`samtools 1.16.1`, `bcftools 1.16`), not by this crate.
+That is the entire point: every other fixture in the workspace comes from our
+own `BgzfWriter`, so a misunderstanding shared by our writer and reader would
+pass silently. These are the only files that can catch a systematically wrong
+reading of the spec.
 
-Committed deliberately — they are small, and regenerating them requires a
-samtools install that not every machine has (the Colab image has none).
+Committed deliberately — they are small, and regenerating them requires an
+htslib install that not every machine has (the Colab image has none).
 
 | File | Contents |
 |---|---|
@@ -14,6 +15,9 @@ samtools install that not every machine has (the Colab image has none).
 | `htslib_multiblock.bam` | 4000 records over 15 BGZF blocks |
 | `pacbio_hifi.bam` | 20 real PacBio HiFi reads, 14 BGZF blocks, tag-heavy |
 | `ont_ultralong.bam` | 4 real ONT ultra-long reads; a 254 KB record spanning 4 blocks |
+| `kg_phase3.bcf` | 715 real 1000 Genomes records, 2504 samples, 58 blocks |
+| `giab_hg002.bcf` | 275 real GIAB HG002 records, 1 sample, rich INFO and FORMAT |
+| `giab_hg002_idx_gap.bcf` | the same, with one INFO tag removed so `IDX` has a gap |
 
 ## What no fixture here covers
 
@@ -179,3 +183,116 @@ samtools view -b fixture.sam -o testdata/ont_ultralong.bam
 `md5sum` is `82c2240869cff15b09caab4e8b71a248`; as with the others, `samtools
 view -b` stamps its own `@PG` so the bytes are not reproducible across samtools
 versions and the tests assert on content.
+
+## The BCF fixtures
+
+Written by `bcftools 1.16` from real public callsets. Between them they cover
+the BCF2 encoding; `crates/fritillaria-bcf/tests/bcftools.rs` asserts the
+relevant property of the fixture *before* relying on it, so a file regenerated
+from different data fails loudly instead of quietly testing nothing.
+
+### The block structure is the interesting part
+
+BCF blocks are packed **full** — 65280-byte payloads, right up to the cap —
+because `bcf_write` goes straight to `bgzf_write` with none of the
+`bgzf_flush_try` that makes htslib start a fresh BGZF block per BAM alignment.
+Measured on these files:
+
+| File | interior block starts | that are also record starts |
+|---|---|---|
+| `kg_phase3.bcf` | 56 | **0** |
+| `giab_hg002.bcf` | 3 | **0** |
+
+So a BCF record straddles essentially every interior block boundary, where a
+BAM record straddles almost none. That inverts the assumption
+`fritillaria-bam`'s device scan is built on, and it is why
+`fritillaria-bcf::looks_like_a_record` exists. See `docs/bcf-boundaries.md`.
+
+### `kg_phase3.bcf`
+
+715 records, 2504 samples, 58 BGZF blocks, 3.7 MB inflated from 182 KB — real
+WGS genotypes compress **20x**, so this is also the first fixture whose ratio is
+in the range real data actually has.
+
+Two regions concatenated, because neither covers the encoding alone:
+
+- **chr22:16,050,000-16,065,000** — a CNV record with four symbolic alleles and
+  an `END` past 16 million, which is the only `int32` INFO value in either
+  fixture; a 17-base REF and a 16-base ALT, both past the 15-element escape.
+- **X:20,000,000-20,010,000** — non-PAR, so haploid males sit beside diploid
+  females and **214 records** carry `END_OF_VECTOR` padding in `GT`. Nothing
+  else here produces that, and reading the pad as data silently turns a haploid
+  call diploid.
+
+INFO covers `int8`, `int16`, `int32`, `float`, `char` and Flag, and vectors with
+`Number=A`, `Number=2` and `Number=.`.
+
+```bash
+K=https://1000genomes.s3.amazonaws.com/release/20130502
+bcftools view -r 22:16050000-16065000 \
+  "$K/ALL.chr22.phase3_shapeit2_mvncall_integrated_v5a.20130502.genotypes.vcf.gz" \
+  -Ob -o p22.bcf && bcftools index p22.bcf
+bcftools view -r X:20000000-20010000 \
+  "$K/ALL.chrX.phase3_shapeit2_mvncall_integrated_v1b.20130502.genotypes.vcf.gz" \
+  -Ob -o pX.bcf && bcftools index pX.bcf
+bcftools concat -a p22.bcf pX.bcf -Ob -o testdata/kg_phase3.bcf
+```
+
+The AWS mirror, not EBI's FTP: identical bytes and the same public dataset, but
+EBI served this at 0.2 MiB/s on 2026-09-09. `md5sum` is
+`1c24f38edb1e3364f65eb9ded5301816`.
+
+### `giab_hg002.bcf`
+
+275 records, one sample, 5 BGZF blocks. Complements the panel fixture at the
+other extreme — narrow genotypes, very rich sites:
+
+- INFO strings running to **196 characters**, so the 15-element vector-length
+  escape fires **1407 times**. Taking the count nibble at face value reads 15
+  bytes and resynchronises onto the middle of a string.
+- `FORMAT` with six keys including `Number=R` vectors (`AD`, `ADALL`), so a
+  wrong per-sample stride shifts every value by a constant and still looks like
+  plausible depths.
+- `PS` missing on every record, written as an `int8` `0x80`. That is the MISSING
+  sentinel *at 8 bits*; classify it after widening to `i32` and it reads as an
+  ordinary -128. Nothing else in either fixture catches that.
+- A ten-entry `FILTER` dictionary.
+
+```bash
+G=https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/release/AshkenazimTrio
+bcftools view -r chr20:1000000-1200000 \
+  "$G/HG002_NA24385_son/NISTv4.2.1/GRCh38/HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz" \
+  -Ob -o testdata/giab_hg002.bcf
+```
+
+`md5sum` is `93e114d6ca6688ad01906a139315cd6e`.
+
+### `giab_hg002_idx_gap.bcf`
+
+The same file with one INFO tag removed. It exists because **without it the
+`IDX` handling is untested**, and that is not obvious: bcftools writes `IDX=` on
+every dictionary line, but on a freshly converted file those numbers equal the
+declaration order — so a reader that ignores `IDX` entirely passes every test
+built on the other two fixtures. Verified: that exact mutation was green until
+this file existed.
+
+Removing a tag is the situation `IDX` was added to the spec for. The numbers
+survive the deletion, so `platforms` (11) disappears and `platformnames` keeps
+12, leaving a gap and an order that no longer matches position.
+
+```bash
+bcftools annotate -x INFO/platforms testdata/giab_hg002.bcf \
+  -Ob -o testdata/giab_hg002_idx_gap.bcf
+```
+
+`md5sum` is `ede01a789589b91a317d153ab2ab0dd8`.
+
+### What no BCF fixture here covers
+
+- **Float `END_OF_VECTOR` and float MISSING in a FORMAT field.** Both are
+  covered synthetically in `typed.rs`; no real file here has a float FORMAT
+  vector of varying length.
+- **A sites-only BCF** (no genotype block at all, `l_indiv == 0`). Covered by
+  unit tests only.
+- **`IDX` in a non-ascending order.** The gap fixture has ascending numbers with
+  a hole; nothing produces genuinely permuted ones.

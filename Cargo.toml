@@ -5,6 +5,7 @@ members = [
     "crates/fritillaria-core",
     "crates/fritillaria-bgzf",
     "crates/fritillaria-bam",
+    "crates/fritillaria-bcf",
     "crates/fritillaria-cuda",
 ]
 
@@ -19,6 +20,7 @@ repository = "https://github.com/alessandrogiannini/fritillaria"
 fritillaria-core = { path = "crates/fritillaria-core", version = "0.0.0" }
 fritillaria-bgzf = { path = "crates/fritillaria-bgzf", version = "0.0.0" }
 fritillaria-bam = { path = "crates/fritillaria-bam", version = "0.0.0" }
+fritillaria-bcf = { path = "crates/fritillaria-bcf", version = "0.0.0" }
 fritillaria-cuda = { path = "crates/fritillaria-cuda", version = "0.0.0" }
 
 crc32fast = "1.5.1"
@@ -28,7 +30,9 @@ crc32fast = "1.5.1"
 libloading = "0.9.0"
 noodles-bgzf = "0.51.0"
 noodles-bam = "0.95.0"
+noodles-bcf = "0.91.0"
 noodles-sam = "0.90.0"
+noodles-vcf = "0.93.0"
 miniz_oxide = "0.9.1"
 thiserror = "2.0.20"
 

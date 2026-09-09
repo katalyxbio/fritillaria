@@ -21,8 +21,9 @@ where PCIe carries compressed bytes instead of decompressed ones — a 3.37x red
 traffic on real WGS data. See *Performance*.
 
 > **Early, and honest about it.** A BAM file goes in and device-resident columns come out,
-> verified against htslib-written files on a real GPU and measured end to end. Breadth is the
-> gap: only BAM is implemented, and the formats below it are a roadmap, not a promise.
+> verified against htslib-written files on a real GPU and measured end to end. BCF parses on the
+> host, validated against `bcftools`, but has no device path yet. Breadth is the gap: everything
+> else below is a roadmap, not a promise.
 
 ## Which inputs get the GPU
 
@@ -46,7 +47,9 @@ silently delivering CPU speed to someone who came for a GPU is the worst thing i
 | SAM, BED, GFF/GTF, FASTA | text | CPU |
 | plain `.gz` (any format) | one DEFLATE stream | CPU — cannot be block-parallel |
 
-Only BAM is implemented so far; the rest is the roadmap, not a promise.
+BAM is implemented end to end. BCF parses on the host and already gets GPU *decompression*
+through the shared container path, but not yet device-side record decoding. The rest is the
+roadmap, not a promise.
 
 Note that BAM is an **input** format as well as an output one — Nanopore and PacBio deliver raw
 reads as unaligned BAM, where the basecaller's output lives in aux tags (`MM`/`ML` base
@@ -68,6 +71,7 @@ carry-the-partial-record loop a real consumer has to write.
 | `fritillaria-core` | Types, errors, `VirtualOffset`, the `BlockCodec` and `DeviceBlockCodec` seams |
 | `fritillaria-bgzf` | Block discovery, CPU codec, writer, batched `BgzfReader`, device-resident `DeviceBgzfReader` |
 | `fritillaria-bam` | Header, record boundary scan, columnar `RecordBatch`, zero-copy `Record`, aux tags, device columns |
+| `fritillaria-bcf` | Header + dictionaries, record boundary scan, BCF2 typed values, zero-copy `Record` (host only so far) |
 | `fritillaria-cuda` | DEFLATE inflate + CRC32 kernels, device-resident output, nvCOMP codec, columnar BAM decode — verified on a Tesla T4 |
 | `fritillaria` | Facade and backend selection (nvCOMP → our kernel → CPU) |
 
@@ -84,8 +88,9 @@ byte-for-byte on an htslib-written BAM.
 **noodles works on top of this, unforked.** `BgzfReader` implements the BGZF reader traits that
 every noodles format crate is generic over, so `noodles_bam::io::Reader` reads a real htslib BAM
 whose blocks were inflated on the GPU — verified on a T4, with GPU and CPU backends producing
-identical records. The same substitution should accelerate BCF, `bgzip`ped VCF, and tabix-indexed
-formats without forking a line of noodles.
+identical records. The same substitution accelerates every other BGZF format without forking a
+line of noodles — verified for BCF, where `noodles_bcf::io::Reader` reads a bcftools-written file
+through this reader with no new code on our side.
 
 ```rust
 use fritillaria_bgzf::BgzfReader;
@@ -190,8 +195,9 @@ upload, further codec work buys little. The effort belongs downstream of it:
 
 1. **Host-side block discovery**, which is now the likely bottleneck: a sequential walk of BGZF
    headers that measures 2.36s standalone against 0.86s of GPU inflate.
-2. **BCF and `bgzip`ped VCF**, which should be close to free through the noodles seam, then
-   `bgzip`ped FASTQ.
+2. **BCF on the device.** Host parsing works and is validated against `bcftools`, and
+   `noodles_bcf` already reads through this reader with no new code. The device-side boundary
+   scan is the open piece — see below. Then `bgzip`ped VCF and FASTQ.
 3. **GPU-side BGZF compression**, so a tool that produces records on-device can write them back
    without paying the transfer the read path just removed.
 
@@ -232,7 +238,15 @@ Three things shape everything else:
    `Vec<Record>` would throw the win away.
 2. **The container is the unit of acceleration, not the format.** Everything BGZF-contained
    shares one GPU path, so each new BGZF format costs only its record parsing. This is why BCF
-   and `bgzip`ped VCF come before text formats: they are nearly free.
+   and `bgzip`ped VCF come before text formats.
+
+   BCF is the first test of that, and it came back split. The container half held exactly as
+   claimed: `noodles_bcf` reads a bcftools-written BCF through this reader with **zero new code**
+   in the BGZF crate. The record half did not. BAM's device-side boundary scan relies on htslib
+   starting a fresh block rather than splitting an alignment, so a block start is almost always a
+   record start — but `bcf_write` packs blocks full, and **0 of 56** interior block boundaries in
+   the BCF fixture fall on a record start. Same container, inverted assumption. The replacement
+   is designed but unbuilt: [`docs/bcf-boundaries.md`](docs/bcf-boundaries.md).
 3. **A CPU reference for every kernel.** It is the correctness oracle: GPU output is diffed
    against it, and it is the only path testable without renting a VM.
 

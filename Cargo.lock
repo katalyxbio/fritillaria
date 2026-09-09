@@ -159,6 +159,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fritillaria-bcf"
+version = "0.0.0"
+dependencies = [
+ "fritillaria-bgzf",
+ "fritillaria-core",
+ "noodles-vcf",
+]
+
+[[package]]
 name = "fritillaria-bgzf"
 version = "0.0.0"
 dependencies = [
@@ -166,8 +175,10 @@ dependencies = [
  "fritillaria-core",
  "miniz_oxide",
  "noodles-bam",
+ "noodles-bcf",
  "noodles-bgzf",
  "noodles-sam",
+ "noodles-vcf",
 ]
 
 [[package]]
@@ -304,6 +315,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "noodles-bcf"
+version = "0.91.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4bd215f6b04b23cd3ac551834833aa070f1e6182dc8c16a32918e7aedf7480c4"
+dependencies = [
+ "indexmap",
+ "memchr",
+ "noodles-bgzf",
+ "noodles-core",
+ "noodles-csi",
+ "noodles-vcf",
+]
+
+[[package]]
 name = "noodles-bgzf"
 version = "0.51.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -354,10 +379,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "noodles-tabix"
+version = "0.67.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8819545ace427054ea761dbfd5a019cccb68fdd25d216e2b4b6275b723d95fc0"
+dependencies = [
+ "bstr",
+ "indexmap",
+ "noodles-bgzf",
+ "noodles-core",
+ "noodles-csi",
+]
+
+[[package]]
+name = "noodles-vcf"
+version = "0.93.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "84f5a470aa883869223f8a92f0da5181bef1d6802d6b44ac95fe230e84674685"
+dependencies = [
+ "indexmap",
+ "memchr",
+ "noodles-bgzf",
+ "noodles-core",
+ "noodles-csi",
+ "noodles-tabix",
+ "percent-encoding",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
+
+[[package]]
+name = "percent-encoding"
+version = "2.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "proc-macro-crate"

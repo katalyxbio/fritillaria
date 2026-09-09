@@ -1,0 +1,24 @@
+[package]
+name = "fritillaria-bcf"
+description = "BCF header parsing, record boundary discovery, and typed-value decoding."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+fritillaria-core.workspace = true
+
+[dev-dependencies]
+# Needed to decompress the committed bcftools fixtures in tests/bcftools.rs.
+fritillaria-bgzf = { workspace = true, features = ["testing"] }
+# A third oracle for the dictionary, which is the part of the header with the
+# most room to be self-consistently wrong: noodles builds the same two maps
+# from the same text, independently. bcftools is the ground truth; this catches
+# the case where we and bcftools happen to agree by construction.
+# Dev-only -- the library depends on nothing but fritillaria-core.
+noodles-vcf.workspace = true
+
+[lints]
+workspace = true
