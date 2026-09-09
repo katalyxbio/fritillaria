@@ -40,6 +40,7 @@ pub mod bam;
 pub mod bcf;
 pub mod fasta;
 pub mod fastq;
+pub mod text;
 
 #[cfg(feature = "nvcomp")]
 pub mod nvcomp;
@@ -50,6 +51,7 @@ pub use bam::{BamDecoder, DecodeTimings};
 pub use bcf::BcfScanner;
 pub use fasta::FastaCompactor;
 pub use fastq::FastqScanner;
+pub use text::TextScanner;
 
 #[cfg(feature = "nvcomp")]
 pub use nvcomp::{NvcompCodec, NvcompContext};
@@ -95,6 +97,12 @@ pub const FASTQ_SCAN_KERNEL_SRC: &str = include_str!("../kernels/fastq_scan.cu")
 ///
 /// The CPU reference for these is `fritillaria_fasta::columnar`; see [`fasta`].
 pub const FASTA_COMPACT_KERNEL_SRC: &str = include_str!("../kernels/fasta_compact.cu");
+
+/// Source of the tab-delimited text scan kernels, compiled by NVRTC.
+///
+/// One set for SAM, VCF, BED, GFF and GTF; the CPU reference is
+/// `fritillaria_text::columnar`. See [`text`].
+pub const TEXT_SCAN_KERNEL_SRC: &str = include_str!("../kernels/text_scan.cu");
 
 /// Source of the payload-restaging kernel, compiled at runtime by NVRTC.
 ///
@@ -306,6 +314,12 @@ mod tests {
                 "{name} must be present for the launcher to find it"
             );
         }
+        for name in ["text_find_lines", "text_count_fields", "text_write_fields"] {
+            assert!(
+                TEXT_SCAN_KERNEL_SRC.contains(name),
+                "{name} must be present for the launcher to find it"
+            );
+        }
         for name in ["fastq_sieve", "fastq_decode", "fastq_walk"] {
             assert!(
                 FASTQ_SCAN_KERNEL_SRC.contains(name),
@@ -320,6 +334,7 @@ mod tests {
             BCF_SCAN_KERNEL_SRC,
             FASTQ_SCAN_KERNEL_SRC,
             FASTA_COMPACT_KERNEL_SRC,
+            TEXT_SCAN_KERNEL_SRC,
         ] {
             assert!(
                 src.contains("extern \"C\""),

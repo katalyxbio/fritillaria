@@ -33,6 +33,7 @@ fritillaria-bam.workspace = true
 fritillaria-bcf.workspace = true
 fritillaria-fastq.workspace = true
 fritillaria-fasta.workspace = true
+fritillaria-text.workspace = true
 cudarc = { workspace = true, optional = true }
 libloading = { workspace = true, optional = true }
 
@@ -49,6 +50,7 @@ fritillaria-bgzf = { workspace = true, features = ["testing"] }
 fritillaria-bam.workspace = true
 fritillaria-fastq.workspace = true
 fritillaria-fasta.workspace = true
+fritillaria-text.workspace = true
 
 [lints]
 workspace = true

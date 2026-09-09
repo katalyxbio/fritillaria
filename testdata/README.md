@@ -426,3 +426,32 @@ tab-delimited fields, `#` comments — and `Dialect::BED` exists, but nothing he
 exercises them. GTF is the one format of the five that really quotes, inside its
 final attributes column; the spec forbids a tab there, and that is reasoning
 from the spec rather than a measurement.
+
+### BED and GTF
+
+Added after the first text commit noted their absence.
+
+```bash
+curl -sL "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/840/245/\
+GCF_000840245.1_ViralProj14204/GCF_000840245.1_ViralProj14204_genomic.gtf.gz" \
+  | gunzip > testdata/lambda.gtf
+curl -sL "https://hgdownload.soe.ucsc.edu/goldenPath/hg38/database/cytoBand.txt.gz" \
+  | gunzip > testdata/cytoband.bed
+```
+
+| File | Writer | Records | Fields |
+|---|---|---|---|
+| `lambda.gtf` | NCBI RefSeq | 357 | 9 |
+| `cytoband.bed` | UCSC | 1,549 | 5 |
+
+**`lambda.gtf` settles a claim that was previously read from a spec.** GTF is
+the only one of the five formats that quotes anything, and the shared scanner
+splits on tabs with no quote tracking — which is only sound if a quoted value
+never contains a tab. Every one of the 357 records has quoted attributes, and
+**none contains a tab inside them**. `gtf_quotes_never_contain_a_tab` asserts it.
+
+**`cytoband.bed` is BED-shaped rather than canonical BED**: its fifth column is
+a Giemsa stain name, not a 0–1000 score, so it is not valid BED5. That does not
+matter for a framing scan, which interprets nothing — and the vendored BED3
+reader parses all 1,549 records, so it still works as an oracle for the first
+three columns.

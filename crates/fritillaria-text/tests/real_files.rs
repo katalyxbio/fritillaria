@@ -135,6 +135,110 @@ fn gff3_records_match_the_vendored_reader() {
 }
 
 #[test]
+fn bed_records_match_the_vendored_reader() {
+    use fritillaria_bed as bed;
+
+    let (buf, batch) = decoded("cytoband.bed", Dialect::BED);
+
+    let mut reader = bed::io::Reader::<3, _>::new(BufReader::new(&buf[..]));
+    let mut record = bed::Record::<3>::default();
+    let mut expected = Vec::new();
+    while reader.read_record(&mut record).expect("vendored read") != 0 {
+        expected.push((
+            record.reference_sequence_name().to_vec(),
+            record.feature_start().expect("start"),
+        ));
+    }
+
+    assert!(!expected.is_empty());
+    assert_eq!(batch.len(), expected.len(), "record count");
+
+    for (i, (name, start)) in expected.iter().enumerate() {
+        assert_eq!(
+            batch.field(&buf, i, 0).expect("chrom"),
+            &name[..],
+            "{i}: chrom"
+        );
+        let text = std::str::from_utf8(batch.field(&buf, i, 1).expect("start")).unwrap();
+        assert_eq!(
+            text.parse::<usize>().unwrap(),
+            usize::from(*start) - 1,
+            "record {i}: BED start is 0-based, and the vendored Position is 1-based"
+        );
+    }
+}
+
+#[test]
+fn gtf_records_match_the_vendored_reader() {
+    use fritillaria_gtf as gtf;
+
+    let (buf, batch) = decoded("lambda.gtf", Dialect::GFF);
+
+    let mut reader = gtf::io::Reader::new(BufReader::new(&buf[..]));
+    let expected: Vec<_> = reader
+        .record_bufs()
+        .map(|r| r.expect("vendored record"))
+        .collect();
+
+    assert!(!expected.is_empty());
+    assert_eq!(batch.len(), expected.len(), "record count");
+
+    for (i, want) in expected.iter().enumerate() {
+        let seqid = batch.field(&buf, i, 0).expect("seqid");
+        assert_eq!(
+            seqid,
+            AsRef::<[u8]>::as_ref(want.reference_sequence_name()),
+            "{i}: seqid"
+        );
+        let source = batch.field(&buf, i, 1).expect("source");
+        assert_eq!(
+            source,
+            AsRef::<[u8]>::as_ref(want.source()),
+            "record {i}: source"
+        );
+    }
+}
+
+#[test]
+fn gtf_quotes_never_contain_a_tab() {
+    // The one claim in this crate's docs that was read from a spec rather than
+    // measured. GTF is the only one of the five that quotes anything, and it
+    // does so in the final attributes column -- after every tab. If a quoted
+    // value could contain a tab, the tab-only split would be wrong for GTF and
+    // the whole shared scanner with it.
+    let (buf, batch) = decoded("lambda.gtf", Dialect::GFF);
+
+    let mut quoted = 0usize;
+    let mut tabs_inside = 0usize;
+    for i in 0..batch.len() {
+        let attributes = batch
+            .field(&buf, i, 8)
+            .expect("GTF has 9 fields; the 9th is attributes");
+        if attributes.contains(&b'"') {
+            quoted += 1;
+        }
+        let mut inside = false;
+        for &b in attributes {
+            match b {
+                b'"' => inside = !inside,
+                b'\t' if inside => tabs_inside += 1,
+                _ => {}
+            }
+        }
+    }
+
+    assert_eq!(
+        quoted,
+        batch.len(),
+        "every record should have quoted attributes"
+    );
+    assert_eq!(
+        tabs_inside, 0,
+        "a quoted GTF value containing a tab would break the split"
+    );
+}
+
+#[test]
 fn every_format_has_the_field_count_its_spec_demands() {
     // SAM has 11 mandatory fields plus optional tags; VCF has 8 plus FORMAT and
     // one column per sample; GFF3 has exactly 9. A wrong tab boundary would
@@ -144,6 +248,8 @@ fn every_format_has_the_field_count_its_spec_demands() {
         ("reads.sam", Dialect::SAM, 12usize),
         ("calls.vcf", Dialect::VCF, 10),
         ("lambda.gff3", Dialect::GFF, 9),
+        ("lambda.gtf", Dialect::GFF, 9),
+        ("cytoband.bed", Dialect::BED, 5),
     ] {
         let (_, batch) = decoded(name, dialect);
         let counts = batch.field_counts();
@@ -164,6 +270,8 @@ fn header_lines_are_counted_and_excluded() {
         ("reads.sam", Dialect::SAM, 4usize),
         ("calls.vcf", Dialect::VCF, 235),
         ("lambda.gff3", Dialect::GFF, 5),
+        ("lambda.gtf", Dialect::GFF, 3),
+        ("cytoband.bed", Dialect::BED, 0),
     ] {
         let (buf, batch) = decoded(name, dialect);
         assert_eq!(
@@ -194,6 +302,8 @@ fn slicing_at_the_tabs_reassembles_the_record() {
         ("reads.sam", Dialect::SAM),
         ("calls.vcf", Dialect::VCF),
         ("lambda.gff3", Dialect::GFF),
+        ("lambda.gtf", Dialect::GFF),
+        ("cytoband.bed", Dialect::BED),
     ] {
         let (buf, batch) = decoded(name, dialect);
         for i in 0..batch.len() {
@@ -218,6 +328,8 @@ fn no_field_contains_a_tab_or_a_newline() {
         ("reads.sam", Dialect::SAM),
         ("calls.vcf", Dialect::VCF),
         ("lambda.gff3", Dialect::GFF),
+        ("lambda.gtf", Dialect::GFF),
+        ("cytoband.bed", Dialect::BED),
     ] {
         let (buf, batch) = decoded(name, dialect);
         for i in 0..batch.len() {

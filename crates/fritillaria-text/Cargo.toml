@@ -15,7 +15,9 @@ memchr.workspace = true
 memchr.workspace = true
 fritillaria-core = { workspace = true, features = ["testing"] }
 # The oracles: independently written parsers for the same three files.
+fritillaria-bed.workspace = true
 fritillaria-gff.workspace = true
+fritillaria-gtf.workspace = true
 fritillaria-sam.workspace = true
 fritillaria-vcf.workspace = true
 

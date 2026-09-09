@@ -517,6 +517,7 @@ dependencies = [
  "fritillaria-core",
  "fritillaria-fasta",
  "fritillaria-fastq",
+ "fritillaria-text",
  "libloading",
 ]
 
@@ -633,8 +634,10 @@ dependencies = [
 name = "fritillaria-text"
 version = "0.0.0"
 dependencies = [
+ "fritillaria-bed",
  "fritillaria-core",
  "fritillaria-gff",
+ "fritillaria-gtf",
  "fritillaria-sam",
  "fritillaria-vcf",
  "memchr",
