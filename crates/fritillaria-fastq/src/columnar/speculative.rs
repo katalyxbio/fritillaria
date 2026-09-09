@@ -36,6 +36,26 @@ use fritillaria_core::Result;
 
 use crate::columnar::record::{bounds_at, scan_records};
 
+/// The first offset at or after `start` that could begin a record.
+///
+/// Skips newlines, and it is not cosmetic. A record whose quality line ends
+/// exactly at a batch edge is *complete*, so the previous batch reported a tail
+/// past it and this one opens with that record's orphaned trailing newline. The
+/// first real record then sits at `start + 1`, the tiling anchor check
+/// (`offsets[0] == start`) fails, and the whole batch silently falls back to the
+/// serial walk — correct, and exactly as slow as the design this replaces.
+///
+/// `scan_records` already skips them, which is why the fallback produced the
+/// right answer and no test noticed.
+#[must_use]
+pub fn effective_start(buf: &[u8], start: usize) -> usize {
+    let mut at = start;
+    while at < buf.len() && buf[at] == b'\n' {
+        at += 1;
+    }
+    at
+}
+
 /// How a scan's boundaries were established.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Proof {
@@ -137,10 +157,11 @@ pub fn prove_tiling(buf: &[u8], start: usize, survivors: &[usize]) -> Option<usi
 /// Always returns what [`scan_records`] would; [`SpeculativeScan::proof`] says
 /// which route got there.
 pub fn scan_records_speculative(buf: &[u8], start: usize) -> Result<SpeculativeScan> {
-    let candidates = candidate_starts(buf, start);
+    let anchor = effective_start(buf, start);
+    let candidates = candidate_starts(buf, anchor);
     let survivors = sieve(buf, &candidates);
 
-    if let Some(tail) = prove_tiling(buf, start, &survivors) {
+    if let Some(tail) = prove_tiling(buf, anchor, &survivors) {
         return Ok(SpeculativeScan {
             offsets: survivors.clone(),
             tail,
@@ -282,6 +303,45 @@ mod tests {
         let scan = scan_records_speculative(&buf, 0).unwrap();
         assert_eq!(scan.offsets, expected);
         assert_eq!(scan.tail, tail);
+    }
+
+    #[test]
+    fn a_batch_opening_on_a_seam_newline_still_tiles() {
+        // The performance cliff `effective_start` exists to remove, and it is
+        // invisible without a constructed case: the answer is right either way,
+        // only the route differs, and a silent fall back to the serial walk
+        // performs exactly like the design this replaces.
+        //
+        // A record whose quality line ended exactly at the previous batch's edge
+        // leaves its trailing newline at the front of this one.
+        let mut buf = vec![b'\n'];
+        buf.extend_from_slice(&build_record(b"r0", b"ACGT", b""));
+        buf.extend_from_slice(&build_record(b"r1", b"TTTT", b""));
+
+        let scan = scan_records_speculative(&buf, 0).unwrap();
+        let (expected, tail) = scan_records(&buf, 0).unwrap();
+
+        assert_eq!(
+            scan.offsets, expected,
+            "the answer must be right regardless"
+        );
+        assert_eq!(scan.tail, tail);
+        assert_eq!(
+            scan.proof,
+            Proof::Tiled,
+            "a leading seam newline must not force the whole batch onto the \
+             serial walk"
+        );
+    }
+
+    #[test]
+    fn effective_start_skips_only_newlines() {
+        assert_eq!(effective_start(b"@r0\n", 0), 0);
+        assert_eq!(effective_start(b"\n@r0\n", 0), 1);
+        assert_eq!(effective_start(b"\n\n\n@r0", 0), 3);
+        // Runs off the end rather than indexing past it.
+        assert_eq!(effective_start(b"\n\n", 0), 2);
+        assert_eq!(effective_start(b"", 0), 0);
     }
 
     #[test]

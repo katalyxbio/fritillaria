@@ -107,11 +107,25 @@ extern "C" {
 // this project exists to delete scales with the *data*, this one with the
 // *record count*.
 __global__ void fastq_sieve(const u8 *buf, u64 len, u64 start, u64 *out, u32 *count, u32 capacity,
-                            u32 *overflow) {
+                            u32 *overflow, u64 *anchor) {
     u64 i = (u64)blockIdx.x * blockDim.x + threadIdx.x;
     i += start;
     if (i >= len) {
         return;
+    }
+
+    // One thread reports where records can actually begin: `start`, advanced
+    // past any newlines. A record whose quality line ended exactly at the
+    // previous batch's edge leaves its trailing newline here, so the first real
+    // record sits at start+1 -- and the host, which does not have the bytes,
+    // would otherwise fail the tiling anchor and drop the whole batch onto the
+    // serial walk. Correct, and exactly as slow as the design this replaces.
+    if (i == start) {
+        u64 a = start;
+        while (a < len && buf[a] == '\n') {
+            ++a;
+        }
+        *anchor = a;
     }
 
     // Candidate line starts only. `start` is a candidate because a batch resumes

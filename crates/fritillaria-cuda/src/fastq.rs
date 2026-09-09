@@ -318,13 +318,14 @@ mod cuda_impl {
             len: usize,
             start: usize,
             capacity: usize,
-        ) -> Result<Option<Vec<usize>>> {
+        ) -> Result<Option<(Vec<usize>, usize)>> {
             let capacity_u32 = u32::try_from(capacity)
                 .map_err(|_| Error::Cuda("survivor capacity exceeds u32".to_string()))?;
 
             let sieved = self.zeros::<u64>(capacity)?;
             let count = self.zeros::<u32>(1)?;
             let overflow = self.zeros::<u32>(1)?;
+            let anchor = self.zeros::<u64>(1)?;
 
             let (len_u64, start_u64) = (len as u64, start as u64);
             let mut builder = self.stream.launch_builder(&self.sieve);
@@ -335,7 +336,8 @@ mod cuda_impl {
                 .arg(&sieved)
                 .arg(&count)
                 .arg(&capacity_u32)
-                .arg(&overflow);
+                .arg(&overflow)
+                .arg(&anchor);
             // SAFETY: the kernel signature matches. `sieved` holds `capacity`
             // u64 slots and writes past it are counted into `overflow` rather
             // than performed.
@@ -353,7 +355,8 @@ mod cuda_impl {
                 .collect();
             // The atomic append gives no ordering.
             offsets.sort_unstable();
-            Ok(Some(offsets))
+            let anchor = self.read(&anchor)?[0] as usize;
+            Ok(Some((offsets, anchor)))
         }
 
         /// Runs the decode kernel over `offsets`, returning the columns.
@@ -479,19 +482,22 @@ mod cuda_impl {
             let capacity = (len / BYTES_PER_SLOT).max(MIN_SLOTS);
 
             let sieved = self.sieve_sorted(alloc, len, start, capacity)?;
-            let survivors = sieved.as_ref().map_or(0, Vec::len);
+            let survivors = sieved.as_ref().map_or(0, |(o, _)| o.len());
 
             // The speculative route: decode the candidates, then check their
             // ends tile. A FASTQ record's length is not in its bytes the way a
             // BAM or BCF record's is, so the decode has to happen first.
-            if let Some(offsets) = sieved
+            // `anchor` is `start` advanced past a seam newline, computed on
+            // device because the host does not have the bytes. Without it a
+            // batch opening on one would fail the tiling and drop to the walk.
+            if let Some((offsets, anchor)) = sieved
                 && !offsets.is_empty()
-                && offsets[0] == start
+                && offsets[0] == anchor
             {
                 let device_offsets = self.upload_offsets(&offsets)?;
                 let decoded = self.decode_offsets(alloc, len, &device_offsets, offsets.len())?;
 
-                if let Some(tail) = tiling_ends_at(start, len, &offsets, &decoded.ends) {
+                if let Some(tail) = tiling_ends_at(anchor, len, &offsets, &decoded.ends) {
                     return Ok((
                         SpeculativeScan {
                             offsets,
