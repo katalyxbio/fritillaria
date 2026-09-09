@@ -2,7 +2,9 @@
 name = "fritillaria-fasta"
 version = "0.66.0"
 authors = ["Michael Macias <zaeleus@gmail.com>"]
-license = "MIT"
+# Mixed: `io`/`fai`/`fs`/`record`/`async` are vendored from noodles-fasta,
+# `columnar` is ours. See VENDORED.md.
+license = "Apache-2.0 AND MIT"
 edition.workspace = true
 rust-version.workspace = true
 description = "FASTA format reader and writer"
@@ -23,6 +25,7 @@ fritillaria-core = { path = "../fritillaria-core", version = "0.20.0" }
 tokio = { workspace = true, optional = true, features = ["fs", "io-util"] }
 
 [dev-dependencies]
+fritillaria-core = { workspace = true, features = ["testing"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lints.rust]

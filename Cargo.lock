@@ -515,6 +515,7 @@ dependencies = [
  "fritillaria-bcf",
  "fritillaria-bgzf",
  "fritillaria-core",
+ "fritillaria-fasta",
  "fritillaria-fastq",
  "libloading",
 ]

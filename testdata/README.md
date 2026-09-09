@@ -340,3 +340,44 @@ quiet failure this directory's README exists to prevent.
 If any of these is regenerated from different reads, check the decoy counts
 still hold — a fixture that is supposed to exercise a case should assert that it
 does, which is the lesson `htslib_multiblock.bam` taught by not doing it.
+
+## FASTA fixture
+
+`controls.fa` — phiX174 (NC_001422.1) and lambda (NC_001416.1), fetched from
+NCBI, which wrote the 70-column wrapping. Both are standard sequencing controls,
+so the file is small and the sequences are ones a bioinformatician recognises.
+
+```bash
+curl -s "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=nuccore\
+&id=NC_001422.1,NC_001416.1&rettype=fasta&retmode=text" -o testdata/controls.fa
+samtools faidx testdata/controls.fa
+```
+
+**The `.fai` is committed alongside it and is the oracle**, not a build
+artefact. Its five columns — NAME, LENGTH, OFFSET, LINEBASES, LINEWIDTH — are
+exactly what `fritillaria_fasta::columnar::RecordBounds` holds, so a
+disagreement means one of us is wrong about the format rather than about
+plumbing. `the_committed_fai_is_what_samtools_produces_today` regenerates it
+when samtools is installed, so the oracle cannot go stale unnoticed.
+
+| | |
+|---|---|
+| contigs | 2 |
+| bases | 5,386 and 48,502 |
+| wrapping | 70 bases per line, uniform |
+| blank line between records | **yes** — `\n\n>` |
+| base composition | **100% ACGT** |
+
+**Two properties matter and both were found by using it.**
+
+The blank line between records is real NCBI formatting, and `samtools faidx`
+indexes such a file without complaint. Counting it as a sequence line made every
+contig look non-uniform, which would have sent the whole file down the byte-wise
+compaction fallback — correct, but single-threaded.
+
+The 100% ACGT composition **bounds what may be claimed**. A real reference has
+millions of `N`s at centromeres, telomeres and assembly gaps, plus IUPAC
+ambiguity codes in some assemblies. 2-bit packing is not implemented partly
+because nothing here could catch it going wrong, and
+`every_base_is_a_nucleotide_code` fails if this file is ever regenerated from
+something that would.
