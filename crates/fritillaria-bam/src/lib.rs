@@ -15,12 +15,16 @@
 
 pub mod aux;
 pub mod batch;
+pub mod blocked;
+pub mod device;
 pub mod header;
 pub mod record;
 pub mod seq;
 
 pub use aux::{Array, Fields, Tag, Value, Values};
 pub use batch::RecordBatch;
+pub use blocked::{BlockedScan, Segment, scan_records_blocked};
+pub use device::{DeviceColumns, DeviceRecordBatch, FieldBounds};
 pub use header::{Header, ReferenceSequence};
 pub use record::{RECORD_CORE_SIZE, Record, scan_records};
 pub use seq::{CigarOp, cigar_op_kind, cigar_op_len, decode_base};

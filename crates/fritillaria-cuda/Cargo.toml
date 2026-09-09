@@ -24,10 +24,18 @@ nvcomp = ["cuda", "dep:libloading"]
 
 [dependencies]
 fritillaria-core.workspace = true
+# The dependency points this way on purpose: launching a kernel means naming a
+# context, a stream and a pointer, and those live only in this crate. So the
+# BAM decode kernel is here and `fritillaria-bam` stays free of any GPU crate,
+# holding its columns as opaque `DeviceBuffer`s. No cycle: `-bam` depends only
+# on `-core`.
+fritillaria-bam.workspace = true
 cudarc = { workspace = true, optional = true }
 libloading = { workspace = true, optional = true }
 
 [dev-dependencies]
+# Fixtures for the columnar decode tests live in testdata/ and are BGZF.
+fritillaria-core = { workspace = true, features = ["testing"] }
 # The oracles the kernels are diffed against in tests/. No cycle: neither
 # depends on this crate.
 crc32fast.workspace = true

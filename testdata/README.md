@@ -12,7 +12,7 @@ samtools install that not every machine has (the Colab image has none).
 |---|---|
 | `htslib.bam` | 8 records, 2 references, one BGZF data block |
 | `htslib_multiblock.bam` | 4000 records over 15 BGZF blocks |
-| `pacbio_hifi.bam` | 20 real PacBio HiFi reads, 25 BGZF blocks, tag-heavy |
+| `pacbio_hifi.bam` | 20 real PacBio HiFi reads, 14 BGZF blocks, tag-heavy |
 | `ont_ultralong.bam` | 4 real ONT ultra-long reads; a 254 KB record spanning 4 blocks |
 
 ## What no fixture here covers
@@ -58,8 +58,8 @@ The long-read fixture. Aux tags are a trailing detail in aligned Illumina data
 and the *payload* in long-read data, so this is the only file here that tests
 aux decoding against anything realistic.
 
-Contents: 20 reads of 11.0–31.0 kbp, 86 references (GRCh37), 1.14 MB
-uncompressed over 25 BGZF blocks, and 25–29 aux tags per record. Between them
+Contents: 20 reads of 11.0–31.0 kbp, 86 references (GRCh37), 0.60 MB
+uncompressed over 14 BGZF blocks, and 25–29 aux tags per record. Between them
 they exercise the
 binary scalar types `C`, `I`, `S`, `f`, `Z` and the `B` subtypes `C`, `S`, `i`,
 `f` — including `MM`/`ML` base modifications and per-base kinetics arrays.

@@ -30,11 +30,14 @@
 #[cfg(feature = "cuda")]
 mod backend;
 
+pub mod bam;
+
 #[cfg(feature = "nvcomp")]
 pub mod nvcomp;
 
 #[cfg(feature = "cuda")]
 pub use backend::{CudaAlloc, CudaContext, InflateTimings};
+pub use bam::BamDecoder;
 
 #[cfg(feature = "nvcomp")]
 pub use nvcomp::{NvcompCodec, NvcompContext};
@@ -58,6 +61,12 @@ pub const CRC32_KERNEL_SRC: &str = include_str!("../kernels/crc32.cu");
 
 /// Source of the inflate kernel, compiled at runtime by NVRTC.
 pub const INFLATE_KERNEL_SRC: &str = include_str!("../kernels/inflate.cu");
+
+/// Source of the BAM boundary-scan and columnar decode kernels, compiled at
+/// runtime by NVRTC.
+///
+/// The CPU reference for these is `fritillaria_bam::blocked`; see [`bam`].
+pub const BAM_DECODE_KERNEL_SRC: &str = include_str!("../kernels/bam_decode.cu");
 
 /// Source of the payload-restaging kernel, compiled at runtime by NVRTC.
 ///
@@ -248,7 +257,23 @@ mod tests {
         assert!(CRC32_KERNEL_SRC.contains("crc32_blocks"));
         assert!(INFLATE_KERNEL_SRC.contains("inflate_blocks"));
         assert!(GATHER_KERNEL_SRC.contains("gather_payloads"));
-        for src in [CRC32_KERNEL_SRC, INFLATE_KERNEL_SRC, GATHER_KERNEL_SRC] {
+        for name in [
+            "bam_scan_blocks",
+            "bam_reconcile",
+            "bam_emit_offsets",
+            "bam_decode_fields",
+        ] {
+            assert!(
+                BAM_DECODE_KERNEL_SRC.contains(name),
+                "{name} must be present for the launcher to find it"
+            );
+        }
+        for src in [
+            CRC32_KERNEL_SRC,
+            INFLATE_KERNEL_SRC,
+            GATHER_KERNEL_SRC,
+            BAM_DECODE_KERNEL_SRC,
+        ] {
             assert!(
                 src.contains("extern \"C\""),
                 "NVRTC needs C linkage to look the kernel up by name"

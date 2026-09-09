@@ -1,6 +1,6 @@
 # Device-resident API design
 
-**Status:** written 2026-09-08. **Steps 1-4 are done.** The core vocabulary (`DeviceAlloc`,
+**Status:** written 2026-09-08. **Steps 1-4 and 6 are done.** The core vocabulary (`DeviceAlloc`,
 `DeviceBuffer`, `DeviceInflateBatch`, `DeviceBlockCodec`) is in `fritillaria-core::device`, with
 host-memory stand-ins behind a `testing` feature and a `HostDeviceCodec` in `fritillaria-bgzf`;
 `CudaCodec` implements `DeviceBlockCodec` over the existing kernel and takes a caller-supplied
@@ -292,13 +292,24 @@ while let Some(batch) = reader.next_batch()? {          // DeviceInflateBatch
 
 ## Open questions
 
-- **Record boundary scan on device.** `scan_records` is inherently sequential (record *n+1*'s
-  offset needs record *n*'s length). Options: run it on the host over a small D2H of just the
-  `block_size` prefixes; or a device-side scan; or speculative parallel scan with validation.
-  Start with the host version — it is cheap relative to inflate, and it keeps the first
-  implementation honest. **Long records make this seam load-bearing:** a multi-megabyte ONT read
-  spans dozens of blocks and may exceed a batch, so the carry logic must be correct before any
-  of this is optimised.
+- ~~**Record boundary scan on device.**~~ **Answered, and none of the three options listed
+  here was the answer.** The host version was going to need the bytes on the host, which is the
+  transfer this design exists to delete; a device-side serial scan is 55,000 dependent loads;
+  and "speculative parallel scan with validation" was right in spirit but vague about what makes
+  it *correct* rather than usually-right.
+
+  What resolved it was a property of htslib discovered while adding the ONT fixture: it calls
+  `bgzf_flush_try` before each record and starts a new block rather than splitting one, so a
+  block start is almost always a record start. Block starts are therefore *candidate*
+  boundaries, already known host-side from the ISIZE prefix sum, giving one independent chain
+  per block.
+
+  Correctness does not rest on the guess. A block's speculative walk is adopted only once the
+  true chain is proven to arrive at that block's start, and a walk from a true boundary is the
+  true walk; everything else falls back to walking. So a wrong guess costs work and never
+  accuracy — which is what makes ultra-long ONT reads, where a record covers whole blocks and
+  most guesses are useless, correct rather than merely slow. `fritillaria-bam/src/blocked.rs` is
+  the CPU reference and `kernels/bam_decode.cu` the translation.
 - **Memory pressure.** Whole-batch device residency has a VRAM ceiling that host-resident output
   does not. 256 blocks is ~16 MiB, fine — but a caller holding many batches for a windowed
   algorithm is not. Needs either a pool or explicit backpressure.
@@ -396,5 +407,25 @@ Each step is independently testable.
    coalesced — and is skipped entirely when a batch already satisfies the requirement. Doing
    this on the host instead would mean a memcpy of the whole compressed batch through host
    memory; on the device it runs at VRAM bandwidth over data already there.
-5. `DeviceBgzfReader` with the host-side boundary scan.
-6. `DeviceRecordBatch::decode` as a kernel, differential-tested against `RecordBatch::decode`.
+5. `DeviceBgzfReader`, driving successive batches and carrying the partial record forward.
+   **Not started, and now the gap.** Step 6 landed first because the boundary scan turned out to
+   be solvable on the device, which was the open question; the reader is ordinary plumbing on
+   top. The loop it needs is written and tested on the host in
+   `fritillaria-bam/tests/ont.rs::driver_carries_a_record_across_batch_edges`.
+6. ~~`DeviceRecordBatch::decode` as a kernel, differential-tested against `RecordBatch::decode`.~~
+   **Done, verified on a T4.** Four kernels — speculate per block, reconcile the true chain,
+   emit offsets, decode fields — in `kernels/bam_decode.cu`, launched by
+   `fritillaria_cuda::bam::BamDecoder`. 6 differential tests over all four fixtures.
+
+   **The columns live in `fritillaria-bam` and the launcher in `fritillaria-cuda`, so the
+   dependency points `-cuda -> -bam`.** Launching a kernel means naming a context, a stream and
+   a pointer, and those are confined to `-cuda` by constraint 2; pointing the dependency the
+   other way would have put them in a format crate. `DeviceRecordBatch` names no CUDA type.
+
+   Variable-length fields are **not** copied into packed payload columns as sketched above.
+   Sequence and qualities are the bulk of a BAM and long-read qualities are a byte per base, so
+   duplicating them would roughly double VRAM for the batch and add a pass over the largest
+   thing in the pipeline. They stay in the inflated buffer, reached through offset columns —
+   which makes the ownership rule sharper: **the `DeviceInflateBatch` must outlive the
+   `DeviceRecordBatch`.** A `compact()` remains the opt-in for consumers that want to drop the
+   source.

@@ -13,6 +13,9 @@ fritillaria-core.workspace = true
 [dev-dependencies]
 # Needed to decompress the committed htslib fixtures in tests/htslib.rs.
 fritillaria-bgzf.workspace = true
+# `testing` gives the host-memory stand-in for device allocations, so the
+# columnar device types are exercised on a machine with no GPU.
+fritillaria-core = { workspace = true, features = ["testing"] }
 
 [lints]
 workspace = true

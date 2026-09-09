@@ -90,6 +90,55 @@ impl RecordBatch {
         "Start offset of each record in the source buffer."
     );
 
+    /// Builds a batch from columns decoded elsewhere.
+    ///
+    /// Exists for the device path: `DeviceRecordBatch::to_host` needs to
+    /// rebuild exactly this shape so the two can be compared field by field.
+    ///
+    /// # Panics
+    ///
+    /// If the columns are not all the same length. They are parallel arrays by
+    /// definition, and a caller that gets that wrong has already lost the
+    /// record-to-value correspondence this type exists to maintain.
+    #[must_use]
+    #[allow(clippy::too_many_arguments, reason = "one parameter per column")]
+    pub fn from_columns(
+        reference_sequence_id: Vec<i32>,
+        position: Vec<i32>,
+        mapping_quality: Vec<u8>,
+        flags: Vec<u16>,
+        sequence_len: Vec<u32>,
+        mate_reference_sequence_id: Vec<i32>,
+        mate_position: Vec<i32>,
+        template_length: Vec<i32>,
+        record_offsets: Vec<usize>,
+    ) -> Self {
+        let n = record_offsets.len();
+        assert!(
+            reference_sequence_id.len() == n
+                && position.len() == n
+                && mapping_quality.len() == n
+                && flags.len() == n
+                && sequence_len.len() == n
+                && mate_reference_sequence_id.len() == n
+                && mate_position.len() == n
+                && template_length.len() == n,
+            "columns must be parallel arrays of equal length"
+        );
+
+        Self {
+            reference_sequence_id,
+            position,
+            mapping_quality,
+            flags,
+            sequence_len,
+            mate_reference_sequence_id,
+            mate_position,
+            template_length,
+            record_offsets,
+        }
+    }
+
     /// Appends one record's fields.
     fn push(&mut self, record: &Record<'_>, offset: usize) {
         self.reference_sequence_id

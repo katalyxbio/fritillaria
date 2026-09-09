@@ -183,6 +183,7 @@ version = "0.0.0"
 dependencies = [
  "crc32fast",
  "cudarc",
+ "fritillaria-bam",
  "fritillaria-bgzf",
  "fritillaria-core",
  "libloading",
