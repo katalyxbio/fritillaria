@@ -292,6 +292,16 @@ impl<'a> Record<'a> {
         read_u32(self.buf, 20).and_then(|bits| Float::classify(bits).value())
     }
 
+    /// QUAL as raw bits, undecoded.
+    ///
+    /// The columnar path stores this rather than an `f32` for the reason above:
+    /// missing is a specific NaN, a real NaN QUAL is legal, and only the bit
+    /// pattern separates them.
+    #[must_use]
+    pub fn quality_bits(&self) -> u32 {
+        read_u32(self.buf, 20).unwrap_or(0)
+    }
+
     /// Number of INFO fields.
     #[must_use]
     pub fn info_count(&self) -> usize {
@@ -467,6 +477,48 @@ impl<'a> Record<'a> {
         }
         Ok(pos)
     }
+
+    /// Where each variable-length section starts, relative to the record.
+    ///
+    /// This is the per-record work a decode kernel thread does, and the reason
+    /// it is not free: ID, the alleles and FILTER are typed values whose lengths
+    /// are only known by decoding their descriptors, so finding where INFO
+    /// begins means walking `2 + n_allele` of them in sequence.
+    ///
+    /// Named here rather than inlined into the batch so that the CPU reference
+    /// and `kernels/bcf_decode.cu` are demonstrably computing the same thing.
+    pub fn bounds(&self) -> Result<RecordBounds> {
+        let alleles_start = typed::skip(self.buf, SITE_CORE_SIZE + 8)?;
+        let filters_start = self.filter_offset()?;
+        let info_start = typed::skip(self.buf, filters_start)?;
+        Ok(RecordBounds {
+            alleles_start: alleles_start as u32,
+            filters_start: filters_start as u32,
+            info_start: info_start as u32,
+            // Both free: the record's own length prefixes give them, which is
+            // why they are not walked for.
+            genotypes_start: self.indiv_start as u32,
+            record_end: self.buf.len() as u32,
+        })
+    }
+}
+
+/// Offsets of a record's variable-length sections, relative to its start.
+///
+/// ID always begins at [`SITE_CORE_SIZE`]` + 8`, so it needs no field of its
+/// own; every later section moves with the one before it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RecordBounds {
+    /// First allele. The ID occupies `SITE_CORE_SIZE + 8 .. alleles_start`.
+    pub alleles_start: u32,
+    /// The FILTER vector. Alleles occupy `alleles_start .. filters_start`.
+    pub filters_start: u32,
+    /// The first INFO key.
+    pub info_start: u32,
+    /// The genotype block — `8 + l_shared`. INFO ends here.
+    pub genotypes_start: u32,
+    /// One past the record's last byte — `8 + l_shared + l_indiv`.
+    pub record_end: u32,
 }
 
 /// Iterator over a record's INFO fields.

@@ -40,15 +40,17 @@
 //! [`Record`] here is a zero-copy view over the inflated buffer, and is a
 //! different type from [`crate::Record`], the vendored owning record.
 
+pub mod batch;
 pub mod header;
 pub mod record;
 pub mod speculative;
 pub mod typed;
 
+pub use batch::RecordBatch;
 pub use header::{Dictionary, Header, parse_header};
 pub use record::{
-    Allele, FormatField, FormatFields, InfoFields, MIN_RECORD_SIZE, Record, SITE_CORE_SIZE,
-    decode_genotype, looks_like_a_record, scan_records,
+    Allele, FormatField, FormatFields, InfoFields, MIN_RECORD_SIZE, Record, RecordBounds,
+    SITE_CORE_SIZE, decode_genotype, looks_like_a_record, scan_records,
 };
 pub use speculative::{Proof, SpeculativeScan, scan_records_speculative};
 pub use typed::{Float, Floats, Int, Ints, Kind, Typed};
