@@ -31,6 +31,7 @@ fritillaria-core.workspace = true
 # on `-core`.
 fritillaria-bam.workspace = true
 fritillaria-bcf.workspace = true
+fritillaria-fastq.workspace = true
 cudarc = { workspace = true, optional = true }
 libloading = { workspace = true, optional = true }
 
@@ -45,6 +46,7 @@ crc32fast.workspace = true
 # reader traits are vendored into the same crate as our reader.
 fritillaria-bgzf = { workspace = true, features = ["testing"] }
 fritillaria-bam.workspace = true
+fritillaria-fastq.workspace = true
 
 [lints]
 workspace = true

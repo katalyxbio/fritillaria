@@ -30,10 +30,10 @@ where PCIe carries compressed bytes instead of decompressed ones — a 3.37x red
 traffic on real WGS data. See *Performance*.
 
 > **Early, and honest about it.** Read and write work for every format, because that half is
-> noodles. The GPU half is narrower than the format list suggests: **BAM** goes in and
-> device-resident columns come out, verified against htslib-written files on a real GPU and
-> measured end to end. **BCF** has a device boundary scan but no columnar decode. Everything
-> else in a BGZF container gets GPU *decompression* and no more. The table below keeps those
+> noodles. The GPU half is narrower than the format list suggests: **BAM**, **BCF** and
+> **bgzipped FASTQ** go in and device-resident columns come out, verified against
+> htslib-written files on a real GPU. Everything else in a BGZF container gets GPU
+> *decompression* and no more, and the text formats get neither. The table below keeps those
 > columns apart on purpose.
 
 ## Which inputs get the GPU
@@ -58,13 +58,19 @@ varies is the GPU column, and it is the only one worth tracking.
 | Format | Container | GPU path |
 |---|---|---|
 | BAM (aligned and unaligned) | BGZF | **full** — inflate, record scan, columnar decode, device-resident |
-| BCF | BGZF | **partial** — device boundary scan; no columnar decode yet |
-| `bgzip`ped VCF/FASTQ, tabix-indexed files | BGZF | decompression only |
+| BCF | BGZF | **full** — boundary scan and columnar site-core decode, device-resident |
+| FASTQ (`bgzip`ped) | BGZF | **full** — boundary scan and columnar decode, device-resident |
+| `bgzip`ped VCF, tabix-indexed files | BGZF | decompression only |
 | SAM, BED, GFF/GTF, FASTA, CRAM | text / own | none, and none claimed |
 | plain `.gz` (any format) | one DEFLATE stream | cannot be block-parallel |
 
-**Breadth is done; depth is not.** One format has the device-resident columnar path this project
-exists for. The rest is the roadmap, not a promise.
+**Breadth is done; depth is partial.** Three formats have the device-resident columnar path this
+project exists for — BAM, BCF and bgzipped FASTQ, which between them cover raw-read input,
+alignment and variant calling. The rest is the roadmap, not a promise.
+
+Note that *decompression* and *parsing* are separate claims. Everything in a BGZF container gets
+GPU decompression from one container-level kernel; parsing has no shared layer, so each format
+needs its own and the three that exist did not generalise to one another.
 
 Note that BAM is an **input** format as well as an output one — Nanopore and PacBio deliver raw
 reads as unaligned BAM, where the basecaller's output lives in aux tags (`MM`/`ML` base
@@ -81,7 +87,7 @@ carry-the-partial-record loop a real consumer has to write.
 
 ## Status
 
-19 crates. Thirteen are vendored noodles, unchanged. Four hold **both** halves — the vendored
+19 crates. Twelve are vendored noodles, unchanged. Five hold **both** halves — the vendored
 CPU API at the crate root, ours alongside it — and two are entirely ours.
 
 | Crate | What works |
@@ -89,10 +95,11 @@ CPU API at the crate root, ours alongside it — and two are entirely ours.
 | `fritillaria-core` | *Ours:* errors, `VirtualOffset`, the `BlockCodec`/`DeviceBlockCodec` seams. *Vendored:* `Position`, `Region` |
 | `fritillaria-bgzf` | *Ours:* block discovery, CPU codec, writer, batched `BgzfReader`, device-resident `DeviceBgzfReader`. *Vendored:* `io::{Reader, Writer}`, `gzi` |
 | `fritillaria-bam` | *Ours* (`columnar`): record boundary scan, `RecordBatch`, zero-copy `Record`, aux tags, device columns. *Vendored:* `io`, `bai`, `fs`, `record` |
-| `fritillaria-bcf` | *Ours* (`columnar`): header + dictionaries, boundary scan (host **and** device), BCF2 typed values. *Vendored:* `io`, `fs`, `record` |
-| `fritillaria-cuda` | All ours. DEFLATE inflate + CRC32 kernels, device-resident output, nvCOMP codec, columnar BAM decode, BCF boundary scan — verified on a Tesla T4 |
+| `fritillaria-bcf` | *Ours* (`columnar`): header + dictionaries, boundary scan (host **and** device), BCF2 typed values, device columns. *Vendored:* `io`, `fs`, `record` |
+| `fritillaria-fastq` | *Ours* (`columnar`): validator, boundary scan, `RecordBatch`, device columns. *Vendored:* `io`, `fai`, `fs`, `record` |
+| `fritillaria-cuda` | All ours. DEFLATE inflate + CRC32 kernels, device-resident output, nvCOMP codec, columnar decode for BAM, BCF and FASTQ — verified on a Tesla T4 |
 | `fritillaria` | Facade: re-exports every format, plus backend selection (nvCOMP → our kernel → CPU) |
-| `-sam -vcf -csi -tabix -cram -bed -fasta -fastq -gff -gtf -util -htsget -refget` | Vendored unchanged |
+| `-sam -vcf -csi -tabix -cram -bed -fasta -gff -gtf -util -htsget -refget` | Vendored unchanged |
 
 Our own code is about 19k lines; the vendored half is 137k. The GPU work is the smaller number
 and the reason the project exists — see [VENDORED.md](VENDORED.md) for the exact split.

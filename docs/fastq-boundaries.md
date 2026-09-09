@@ -95,6 +95,25 @@ The general lesson, and it is the same one the BCF work recorded: **a validator
 with several conditions needs a case per condition.** Measuring that the whole
 thing admits nothing does not tell you which part is doing the admitting.
 
+## Status
+
+**Implemented, 2026-09-09.** Host reference in `fritillaria_fastq::columnar`,
+kernels in `kernels/fastq_scan.cu`, launcher `fritillaria_cuda::FastqScanner`.
+The GPU-free driver loop is `fritillaria-fastq/tests/device_reader.rs`; the
+differential test against the CPU reference is
+`fritillaria-cuda/tests/fastq_decode.rs`.
+
+One thing the implementation found that the measurement had not:
+
+**The decode must run *before* the tiling is proved, which is the opposite of
+BCF.** A BCF record carries `l_shared`/`l_indiv`, so the host can compute every
+record's end from the offsets alone and prove a tiling with no further device
+work. A FASTQ record's length is not in its bytes — it is the sum of four line
+lengths, which only a walk discovers. So the proof consumes the decode kernel's
+`record_end` output, and a failed proof discards those columns and falls back to
+the on-device walk. Slightly more work in the failure case, and none in the
+success case, which is the one that happens.
+
 ## What follows for the kernel
 
 - **One thread per candidate line start**, exactly as BCF's sieve does, then the

@@ -38,6 +38,7 @@ mod backend;
 
 pub mod bam;
 pub mod bcf;
+pub mod fastq;
 
 #[cfg(feature = "nvcomp")]
 pub mod nvcomp;
@@ -46,6 +47,7 @@ pub mod nvcomp;
 pub use backend::{CudaAlloc, CudaContext, InflateTimings};
 pub use bam::{BamDecoder, DecodeTimings};
 pub use bcf::BcfScanner;
+pub use fastq::FastqScanner;
 
 #[cfg(feature = "nvcomp")]
 pub use nvcomp::{NvcompCodec, NvcompContext};
@@ -80,6 +82,12 @@ pub const BAM_DECODE_KERNEL_SRC: &str = include_str!("../kernels/bam_decode.cu")
 ///
 /// The CPU reference for these is `fritillaria_bcf::columnar::speculative`; see [`bcf`].
 pub const BCF_SCAN_KERNEL_SRC: &str = include_str!("../kernels/bcf_scan.cu");
+
+/// Source of the FASTQ boundary-scan and decode kernels, compiled by NVRTC.
+///
+/// The CPU reference for these is `fritillaria_fastq::columnar::speculative`;
+/// see [`fastq`].
+pub const FASTQ_SCAN_KERNEL_SRC: &str = include_str!("../kernels/fastq_scan.cu");
 
 /// Source of the payload-restaging kernel, compiled at runtime by NVRTC.
 ///
@@ -281,11 +289,19 @@ mod tests {
                 "{name} must be present for the launcher to find it"
             );
         }
+        for name in ["fastq_sieve", "fastq_decode", "fastq_walk"] {
+            assert!(
+                FASTQ_SCAN_KERNEL_SRC.contains(name),
+                "{name} must be present for the launcher to find it"
+            );
+        }
         for src in [
             CRC32_KERNEL_SRC,
             INFLATE_KERNEL_SRC,
             GATHER_KERNEL_SRC,
             BAM_DECODE_KERNEL_SRC,
+            BCF_SCAN_KERNEL_SRC,
+            FASTQ_SCAN_KERNEL_SRC,
         ] {
             assert!(
                 src.contains("extern \"C\""),

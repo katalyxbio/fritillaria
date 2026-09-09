@@ -30,7 +30,7 @@ tokio = { workspace = true, optional = true, features = ["io-util"] }
 fritillaria-core = { workspace = true, features = ["testing"] }
 # tests/columns.rs inflates the committed bgzipped fixtures. Dev-only: the
 # columnar path takes an already-inflated buffer and knows nothing of BGZF.
-fritillaria-bgzf.workspace = true
+fritillaria-bgzf = { workspace = true, features = ["testing"] }
 tokio = { workspace = true, features = ["fs", "io-std", "macros", "rt-multi-thread"] }
 
 [lints.rust]
