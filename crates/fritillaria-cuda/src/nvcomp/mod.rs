@@ -156,7 +156,7 @@ impl NvcompContext {
 
         let lib = Nvcomp::load()?;
         let opts = DeflateDecompressOpts::new(Backend::Default);
-        let alignments = lib.deflate_alignments(opts)?;
+        let alignments = lib.deflate_decompress_alignments(opts)?;
 
         if alignments.output > 1 {
             // Unreachable with 5.3, which reports 1. Refused rather than
@@ -334,7 +334,7 @@ impl NvcompContext {
         // assuming would be an out-of-bounds write if that ever changes.
         let temp_bytes =
             self.lib
-                .deflate_temp_size(count, MAX_BLOCK_SIZE, plan.total, self.opts)?;
+                .deflate_decompress_temp_size(count, MAX_BLOCK_SIZE, plan.total, self.opts)?;
 
         Ok(Uploaded {
             in_ptrs: self

@@ -123,6 +123,62 @@ is somebody's archive.
 So: level 4 by default, `0`–`5` exposed, and the chosen level recorded in
 whatever we print, so a user who picks speed knows they picked it.
 
+## The memory cost, measured — and it is the real constraint
+
+Queried from the real library on **a machine with no GPU**, because all three
+sizing entry points are host-side. Per 64 KiB chunk:
+
+| `algorithm` | scratch / chunk | ×chunk | output slot | ×chunk | **total VRAM / chunk** | ×chunk |
+|---|---|---|---|---|---|---|
+| 0 entropy-only | 0 | 0x | 148,256 | 2.26x | 213,792 | **3.3x** |
+| 1 low ratio | 360,480 | 5.5x | 148,256 | 2.26x | 574,272 | **8.8x** |
+| 2 medium | 655,392 | 10x | 148,256 | 2.26x | 869,184 | **13.3x** |
+| **4 high ratio** | **1,114,184** | **17x** | 148,256 | 2.26x | **1,327,976** | **20.3x** |
+| 5 max ratio | 1,179,720 | 18x | 148,256 | 2.26x | 1,393,512 | **21.3x** |
+
+Three things here were not guessable, and all three shape the implementation.
+
+**Scratch is 17x the payload at our chosen default.** It is exactly linear in the
+chunk count (verified to 16,384 chunks; the lower rungs deviate by a few parts
+per million, which is bounded rather than modelled), so a batch sizer can divide
+a VRAM budget by a constant. But the constant is large: compressing 64 KiB costs
+over a megabyte of scratch.
+
+**So compression batches must be far smaller than decompression batches.** The
+read path put 166,012 blocks in one batch. At 1.33 MB per block, a 16 GiB T4
+holds roughly **11,000 blocks — about 708 MiB of payload — and an L4 about
+17,800**. That is a 15x reduction in batch size against the read path, and it
+comes entirely from scratch, not from the data.
+
+**The ratio ladder is also a VRAM ladder**, which the header does not mention.
+Level 0 fits 6.2x more blocks per batch than level 4 — so choosing ratio costs
+throughput twice: once in the kernel, and again in more launches over smaller
+batches. This is a genuine argument for Parabricks' default that the ratio
+tables alone do not show, and it is why the level has to stay caller-visible.
+
+It does not overturn the choice. A 20–48% size penalty is permanent and paid by
+every future reader; a smaller batch is a scheduling cost paid once, and the
+measured per-batch overhead on the read path was small. But the decision is now
+made against the real tradeoff rather than half of it.
+
+**The output slot is 2.26x the chunk**, not the ~1.0006x DEFLATE's own
+worst-case expansion implies. nvCOMP wants generous room, and since real sizes
+are only known after the kernel runs, output has to be preallocated at that
+worst case per chunk.
+
+**Output alignment is 8, where decompression's is 1.** That difference matters:
+an output alignment of 1 is what lets nvCOMP inflate straight into a dense
+buffer, and it is why the read path needs no compaction pass. Compression gets
+no such gift, so compressed blocks land in padded worst-case slots and the BGZF
+stream must be gathered out of them. That pass is over the *compressed* data —
+the small side — so it is far cheaper than the equivalent would have been on the
+read path, where it would have touched the largest buffer in the pipeline.
+
+Both facts are now pinned by tests rather than remembered: `ffi.rs` asserts the
+output alignment is 8 and that scratch is linear, so a future nvCOMP that
+relaxed either would fail loudly and the compaction pass could be deleted on
+evidence.
+
 ## What is still unmeasured
 
 Everything above about nvCOMP is **NVIDIA's claim, not our measurement.** The
@@ -138,6 +194,11 @@ comment. Before any of this is believed:
 3. **Whether the output is spec-valid BGZF that samtools accepts** — including
    the 28-byte EOF block, or tools report truncation. This is the acceptance
    bar and it is binary.
+
+The memory table above *is* ours and needs no device — nvCOMP answers those
+queries on a machine with no driver, which is why they were measured before
+anything was built rather than discovered on a rented VM. Only the ratio and
+throughput columns need hardware.
 
 Note that unlike decompression, there is no byte-identity oracle available: two
 valid DEFLATE streams of the same input legitimately differ. The test has to be

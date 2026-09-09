@@ -86,6 +86,77 @@ impl fmt::Debug for DeflateDecompressOpts {
     }
 }
 
+/// `nvcompBatchedDeflateCompressOpts_t` — 64 bytes, passed by value.
+///
+/// The single field selects a point on nvCOMP's throughput/ratio ladder; see
+/// [`DeflateAlgorithm`] for what each one means and why our default is not
+/// nvCOMP's.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct DeflateCompressOpts {
+    pub algorithm: c_int,
+    pub reserved: [c_char; 60],
+}
+
+impl DeflateCompressOpts {
+    #[must_use]
+    pub fn new(algorithm: DeflateAlgorithm) -> Self {
+        Self {
+            algorithm: algorithm as c_int,
+            reserved: [0; 60],
+        }
+    }
+}
+
+impl fmt::Debug for DeflateCompressOpts {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DeflateCompressOpts")
+            .field("algorithm", &self.algorithm)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The `algorithm` field of [`DeflateCompressOpts`], with NVIDIA's own
+/// descriptions from `deflate.h`.
+///
+/// # Why the default is [`DeflateAlgorithm::HighRatio`] and not nvCOMP's
+///
+/// nvCOMP defaults to `1`, and NVIDIA Parabricks' `--gpuwrite-deflate-algo`
+/// defaults to `0` — entropy-only. Both optimise for throughput, which is the
+/// right call for a batch aligner whose BAM is often an intermediate.
+///
+/// A library does not get to assume that: the file we write is somebody's
+/// archive, and a measured 20–48% size penalty (see `docs/compression.md`) is
+/// paid by every future reader of it. `4` is the first rung NVIDIA documents as
+/// beating Zlib level 6, which is roughly where output size reaches parity with
+/// the libdeflate-level-6 that htslib writes.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[repr(i32)]
+pub enum DeflateAlgorithm {
+    /// Highest throughput, **entropy-only**. Parabricks' default, not ours.
+    EntropyOnly = 0,
+    /// High throughput, low ratio. nvCOMP's own default.
+    LowRatio = 1,
+    /// Medium; documented as beating Zlib level 1.
+    MediumRatio = 2,
+    /// Lower throughput, higher ratio; documented as beating Zlib level 6.
+    /// Ours, and see the type's docs for why it is not nvCOMP's.
+    #[default]
+    HighRatio = 4,
+    /// Lowest throughput, highest ratio.
+    MaxRatio = 5,
+}
+
+/// nvCOMP refuses a chunk larger than this: "Chunk sizes must not exceed 65536
+/// bytes. For best performance, a chunk size of 65536 bytes is recommended."
+///
+/// BGZF caps an uncompressed block at 64 KiB, so the format's limit and the
+/// codec's are the same number and the recommended size is the one we already
+/// want to write. Nothing to reconcile — but it is asserted rather than assumed,
+/// because a BGZF block *may* legally carry 65536 bytes and that is exactly the
+/// boundary.
+pub const MAX_COMPRESS_CHUNK_BYTES: usize = 65536;
+
 /// `nvcompAlignmentRequirements_t`.
 #[derive(Clone, Copy, Debug, Default)]
 #[repr(C)]
@@ -192,6 +263,25 @@ type FnDeflateDecompress = unsafe extern "C" fn(
     *mut Status, // device_statuses
     Stream,
 ) -> Status;
+type FnDeflateCompressAlignments =
+    unsafe extern "C" fn(DeflateCompressOpts, *mut AlignmentRequirements) -> Status;
+type FnDeflateCompressTempSize =
+    unsafe extern "C" fn(usize, usize, DeflateCompressOpts, *mut usize, usize) -> Status;
+type FnDeflateMaxOutputChunkSize =
+    unsafe extern "C" fn(usize, DeflateCompressOpts, *mut usize) -> Status;
+type FnDeflateCompress = unsafe extern "C" fn(
+    *const *const c_void, // device_uncompressed_chunk_ptrs
+    *const usize,         // device_uncompressed_chunk_bytes
+    usize,                // max_uncompressed_chunk_bytes
+    usize,                // num_chunks
+    *mut c_void,          // device_temp_ptr
+    usize,                // temp_bytes
+    *const *mut c_void,   // device_compressed_chunk_ptrs
+    *mut usize,           // device_compressed_chunk_bytes (out)
+    DeflateCompressOpts,
+    *mut Status, // device_statuses
+    Stream,
+) -> Status;
 type FnCrc32HeuristicConf =
     unsafe extern "C" fn(*const usize, usize, *mut Crc32KernelConf, usize, Stream) -> Status;
 type FnCrc32 = unsafe extern "C" fn(
@@ -213,9 +303,13 @@ pub struct Nvcomp {
     _lib: Library,
     pub version: u32,
     status_string: FnStatusString,
-    deflate_alignments: FnDeflateAlignments,
-    deflate_temp_size: FnDeflateTempSize,
+    deflate_decompress_alignments: FnDeflateAlignments,
+    deflate_decompress_temp_size: FnDeflateTempSize,
     deflate_decompress: FnDeflateDecompress,
+    deflate_compress_alignments: FnDeflateCompressAlignments,
+    deflate_compress_temp_size: FnDeflateCompressTempSize,
+    deflate_max_output_chunk_size: FnDeflateMaxOutputChunkSize,
+    deflate_compress: FnDeflateCompress,
     crc32_heuristic_conf: FnCrc32HeuristicConf,
     crc32: FnCrc32,
 }
@@ -307,12 +401,28 @@ impl Nvcomp {
         Ok(Self {
             version: properties.version,
             status_string: symbol(&lib, b"nvcompGetStatusString\0")?,
-            deflate_alignments: symbol(
+            deflate_decompress_alignments: symbol(
                 &lib,
                 b"nvcompBatchedDeflateDecompressGetRequiredAlignments\0",
             )?,
-            deflate_temp_size: symbol(&lib, b"nvcompBatchedDeflateDecompressGetTempSizeAsync\0")?,
+            deflate_decompress_temp_size: symbol(
+                &lib,
+                b"nvcompBatchedDeflateDecompressGetTempSizeAsync\0",
+            )?,
             deflate_decompress: symbol(&lib, b"nvcompBatchedDeflateDecompressAsync\0")?,
+            deflate_compress_alignments: symbol(
+                &lib,
+                b"nvcompBatchedDeflateCompressGetRequiredAlignments\0",
+            )?,
+            deflate_compress_temp_size: symbol(
+                &lib,
+                b"nvcompBatchedDeflateCompressGetTempSizeAsync\0",
+            )?,
+            deflate_max_output_chunk_size: symbol(
+                &lib,
+                b"nvcompBatchedDeflateCompressGetMaxOutputChunkSize\0",
+            )?,
+            deflate_compress: symbol(&lib, b"nvcompBatchedDeflateCompressAsync\0")?,
             crc32_heuristic_conf: symbol(&lib, b"nvcompBatchedCRC32GetHeuristicConf\0")?,
             crc32: symbol(&lib, b"nvcompBatchedCRC32Async\0")?,
             _lib: lib,
@@ -368,10 +478,13 @@ impl Nvcomp {
     /// across input, output and temp, and the per-buffer values matter a great
     /// deal here — see [`super::NvcompContext`] on why an output alignment of 1
     /// is what makes the dense layout possible.
-    pub fn deflate_alignments(&self, opts: DeflateDecompressOpts) -> Result<AlignmentRequirements> {
+    pub fn deflate_decompress_alignments(
+        &self,
+        opts: DeflateDecompressOpts,
+    ) -> Result<AlignmentRequirements> {
         let mut out = AlignmentRequirements::default();
         // SAFETY: transcribed signature; `out` is a valid, writable local.
-        let status = unsafe { (self.deflate_alignments)(opts, &raw mut out) };
+        let status = unsafe { (self.deflate_decompress_alignments)(opts, &raw mut out) };
         self.check(status, "querying deflate alignment requirements")?;
         Ok(out)
     }
@@ -381,7 +494,7 @@ impl Nvcomp {
     /// Measured at zero for deflate in 5.3, but queried anyway: it is cheap,
     /// it does not touch the device, and assuming zero would be a silent
     /// out-of-bounds if a future version needed scratch.
-    pub fn deflate_temp_size(
+    pub fn deflate_decompress_temp_size(
         &self,
         num_chunks: usize,
         max_uncompressed_chunk_bytes: usize,
@@ -392,7 +505,7 @@ impl Nvcomp {
         // SAFETY: transcribed signature; the out-pointer is a valid local and
         // this entry point does not touch the device.
         let status = unsafe {
-            (self.deflate_temp_size)(
+            (self.deflate_decompress_temp_size)(
                 num_chunks,
                 max_uncompressed_chunk_bytes,
                 opts,
@@ -446,6 +559,126 @@ impl Nvcomp {
             )
         };
         self.check(status, "launching deflate decompression")
+    }
+
+    /// Buffer alignment nvCOMP requires for deflate **compression**.
+    ///
+    /// Queried per-options rather than shared with the decompress side: the
+    /// header ties the requirement to the `compress_opts` passed, so nothing
+    /// guarantees the two directions agree, and the output alignment decides
+    /// whether compressed blocks can be written straight into a dense BGZF
+    /// stream or have to be compacted afterwards.
+    pub fn deflate_compress_alignments(
+        &self,
+        opts: DeflateCompressOpts,
+    ) -> Result<AlignmentRequirements> {
+        let mut out = AlignmentRequirements::default();
+        // SAFETY: transcribed signature; `out` is a valid, writable local.
+        let status = unsafe { (self.deflate_compress_alignments)(opts, &raw mut out) };
+        self.check(status, "querying deflate compression alignments")?;
+        Ok(out)
+    }
+
+    /// Scratch bytes nvCOMP needs to compress a batch of this shape.
+    ///
+    /// Unlike the decompress side — which needs none in 5.3 — compression is
+    /// expected to want real scratch, so this value is load-bearing rather than
+    /// a formality. Despite the `Async` in nvCOMP's name for this entry point it
+    /// takes no stream and does not touch the device.
+    pub fn deflate_compress_temp_size(
+        &self,
+        num_chunks: usize,
+        max_uncompressed_chunk_bytes: usize,
+        max_total_uncompressed_bytes: usize,
+        opts: DeflateCompressOpts,
+    ) -> Result<usize> {
+        let mut temp_bytes = 0usize;
+        // SAFETY: transcribed signature; the out-pointer is a valid local.
+        let status = unsafe {
+            (self.deflate_compress_temp_size)(
+                num_chunks,
+                max_uncompressed_chunk_bytes,
+                opts,
+                &raw mut temp_bytes,
+                max_total_uncompressed_bytes,
+            )
+        };
+        self.check(status, "querying deflate compression temp size")?;
+        Ok(temp_bytes)
+    }
+
+    /// Worst-case compressed size for a chunk of `max_uncompressed_chunk_bytes`.
+    ///
+    /// The output side has to be preallocated at this size per chunk, because
+    /// the real sizes are only known once the kernel has run and reading them
+    /// back to size the allocation would mean a host synchronise mid-batch. So
+    /// BGZF output is written into worst-case slots and compacted, which is the
+    /// inverse of the read path — there, an output alignment of 1 let nvCOMP
+    /// write straight into a dense buffer.
+    ///
+    /// Note this can exceed the input size: DEFLATE on incompressible data
+    /// stores it verbatim plus framing, and BGZF has to cope with that anyway.
+    pub fn deflate_max_output_chunk_size(
+        &self,
+        max_uncompressed_chunk_bytes: usize,
+        opts: DeflateCompressOpts,
+    ) -> Result<usize> {
+        let mut max_compressed = 0usize;
+        // SAFETY: transcribed signature; the out-pointer is a valid local.
+        let status = unsafe {
+            (self.deflate_max_output_chunk_size)(
+                max_uncompressed_chunk_bytes,
+                opts,
+                &raw mut max_compressed,
+            )
+        };
+        self.check(status, "querying maximum compressed chunk size")?;
+        Ok(max_compressed)
+    }
+
+    /// Queues batched deflate compression on `stream`.
+    ///
+    /// # Safety
+    ///
+    /// Every pointer must be device-accessible and stay alive until the stream
+    /// has caught up. `in_ptrs`, `in_bytes`, `out_ptrs`, `out_bytes` and
+    /// `statuses` must each have `num_chunks` elements; no input chunk may
+    /// exceed [`MAX_COMPRESS_CHUNK_BYTES`]; each input and output buffer must
+    /// meet the alignment reported by [`Nvcomp::deflate_compress_alignments`];
+    /// and each output buffer must have room for
+    /// [`Nvcomp::deflate_max_output_chunk_size`].
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn deflate_compress(
+        &self,
+        in_ptrs: *const *const c_void,
+        in_bytes: *const usize,
+        max_uncompressed_chunk_bytes: usize,
+        num_chunks: usize,
+        temp: *mut c_void,
+        temp_bytes: usize,
+        out_ptrs: *const *mut c_void,
+        out_bytes: *mut usize,
+        opts: DeflateCompressOpts,
+        statuses: *mut Status,
+        stream: Stream,
+    ) -> Result<()> {
+        // SAFETY: the caller guarantees the pointer/length contract above.
+        let status = unsafe {
+            (self.deflate_compress)(
+                in_ptrs,
+                in_bytes,
+                max_uncompressed_chunk_bytes,
+                num_chunks,
+                temp,
+                temp_bytes,
+                out_ptrs,
+                out_bytes,
+                opts,
+                statuses,
+                stream,
+            )
+        };
+        self.check(status, "launching deflate compression")
     }
 
     /// Picks a CRC32 kernel configuration for a batch of this shape.
@@ -526,6 +759,7 @@ mod tests {
     #[test]
     fn by_value_structs_match_the_c_layout() {
         assert_eq!(size_of::<DeflateDecompressOpts>(), 64);
+        assert_eq!(size_of::<DeflateCompressOpts>(), 64);
         assert_eq!(size_of::<Crc32Spec>(), 32);
         assert_eq!(size_of::<Crc32KernelConf>(), 32);
         assert_eq!(size_of::<Crc32Opts>(), 128);
@@ -563,7 +797,7 @@ mod tests {
         assert!(lib.version >= MIN_VERSION);
 
         let alignments = lib
-            .deflate_alignments(DeflateDecompressOpts::new(Backend::Default))
+            .deflate_decompress_alignments(DeflateDecompressOpts::new(Backend::Default))
             .expect("querying alignments");
         // Sanity, not a spec: nonsense here means the struct came back wrong.
         for value in [alignments.input, alignments.output, alignments.temp] {
@@ -574,7 +808,7 @@ mod tests {
         }
 
         let temp = lib
-            .deflate_temp_size(
+            .deflate_decompress_temp_size(
                 1024,
                 65536,
                 1024 * 65536,
@@ -584,6 +818,199 @@ mod tests {
         assert!(temp < 1 << 40, "implausible temp size {temp}");
 
         assert!(!lib.describe(NVCOMP_SUCCESS).is_empty());
+    }
+
+    /// The same trick, applied to the compression half.
+    ///
+    /// All three query entry points are host-side — they only reason about
+    /// sizes — so the compress FFI is checkable on a machine with no GPU, just
+    /// as the decompress one is. That matters more here than there: the read
+    /// path has a byte-identity oracle to catch a bad transcription downstream,
+    /// and the write path has none, because two valid DEFLATE streams of the
+    /// same input legitimately differ.
+    ///
+    /// Every algorithm is queried rather than only our default, since the
+    /// header ties both the alignment and the scratch size to `compress_opts`
+    /// and nothing says they are constant across the ladder.
+    #[test]
+    fn the_real_library_agrees_about_compression_too() {
+        use DeflateAlgorithm::{EntropyOnly, HighRatio, LowRatio, MaxRatio, MediumRatio};
+
+        const CHUNKS: usize = 1024;
+        const PAYLOAD: usize = CHUNKS * MAX_COMPRESS_CHUNK_BYTES;
+
+        if std::env::var_os(LIB_PATH_ENV).is_none() {
+            eprintln!("NOTE: {LIB_PATH_ENV} unset, not exercising the real nvCOMP");
+            return;
+        }
+
+        let lib = Nvcomp::load().expect("loading the library named by the environment");
+        let mut previous_temp = 0usize;
+        for algorithm in [EntropyOnly, LowRatio, MediumRatio, HighRatio, MaxRatio] {
+            let opts = DeflateCompressOpts::new(algorithm);
+
+            let alignments = lib
+                .deflate_compress_alignments(opts)
+                .unwrap_or_else(|err| panic!("alignments for {algorithm:?}: {err}"));
+            for value in [alignments.input, alignments.output, alignments.temp] {
+                assert!(
+                    value.is_power_of_two() && value <= 4096,
+                    "implausible alignment {value} for {algorithm:?} — check the struct layout"
+                );
+            }
+
+            // The read path gets output alignment 1, which is what lets nvCOMP
+            // inflate straight into a dense buffer. Compression does not, so
+            // compressed blocks land in padded slots and the BGZF stream has to
+            // be compacted out of them. Pinned because that compaction pass is
+            // a design consequence, and if a future version relaxed this to 1
+            // the pass could be deleted rather than silently kept.
+            assert_eq!(
+                alignments.output, 8,
+                "compression output alignment changed for {algorithm:?}"
+            );
+
+            let temp = lib
+                .deflate_compress_temp_size(CHUNKS, MAX_COMPRESS_CHUNK_BYTES, PAYLOAD, opts)
+                .unwrap_or_else(|err| panic!("temp size for {algorithm:?}: {err}"));
+
+            // Scratch is what caps a compression batch, so the shape of this
+            // number is load-bearing rather than incidental. Measured 5.3.0.16:
+            // exactly 0x, 5.5x, 10x, 17x and 18x the batch payload. Asserting
+            // the *ordering* rather than the constants catches a scrambled
+            // `algorithm` field — the one way a bad struct layout could show up
+            // as plausible answers — without breaking on a legitimate retune.
+            assert!(
+                temp >= previous_temp,
+                "scratch should not shrink as ratio rises: {algorithm:?} wants {temp}, \
+                 the rung below wanted {previous_temp}"
+            );
+            assert!(
+                temp <= 32 * PAYLOAD,
+                "implausible scratch {temp} for a {PAYLOAD}-byte payload at {algorithm:?}"
+            );
+            previous_temp = temp;
+
+            // The number every output allocation is sized from, so a wrong one
+            // is an overflow rather than a wrong answer. It legitimately exceeds
+            // the input — incompressible data is stored verbatim plus framing —
+            // and measured 2.26x, which is far more than the 1.0006x DEFLATE's
+            // own worst case implies. Bound loosely; the exact value is
+            // recorded in docs/compression.md because it sizes every batch.
+            let max_out = lib
+                .deflate_max_output_chunk_size(MAX_COMPRESS_CHUNK_BYTES, opts)
+                .unwrap_or_else(|err| panic!("max output size for {algorithm:?}: {err}"));
+            assert!(
+                (MAX_COMPRESS_CHUNK_BYTES..=4 * MAX_COMPRESS_CHUNK_BYTES).contains(&max_out),
+                "implausible max compressed size {max_out} for a {MAX_COMPRESS_CHUNK_BYTES}-byte \
+                 chunk at {algorithm:?}"
+            );
+        }
+
+        // Entropy-only is the one rung that needs no scratch at all, which is
+        // most of why it is the throughput default everywhere else.
+        let none = lib
+            .deflate_compress_temp_size(
+                CHUNKS,
+                MAX_COMPRESS_CHUNK_BYTES,
+                PAYLOAD,
+                DeflateCompressOpts::new(EntropyOnly),
+            )
+            .expect("temp size for EntropyOnly");
+        assert_eq!(none, 0);
+    }
+
+    /// Scratch is exactly linear in the chunk count.
+    ///
+    /// This is what makes a compression batch sizeable at all, and it is the
+    /// property a batch sizer divides by: scratch per chunk is a constant, so
+    /// "how many blocks fit in the VRAM budget" has an answer. If the cost were
+    /// superlinear there would be no safe batch size.
+    ///
+    /// Measured at **1,114,184 bytes per 64 KiB chunk** at our default — 17x the
+    /// chunk itself, and the dominant term in the memory budget. Growth in the
+    /// chunk *size* is close to linear but carries a small per-chunk constant
+    /// that does not fit one model across the whole ladder, so only the
+    /// direction is asserted there. BGZF chunks are 64 KiB anyway.
+    #[test]
+    fn compression_scratch_is_linear_in_the_chunk_count() {
+        if std::env::var_os(LIB_PATH_ENV).is_none() {
+            eprintln!("NOTE: {LIB_PATH_ENV} unset, not exercising the real nvCOMP");
+            return;
+        }
+
+        let lib = Nvcomp::load().expect("loading the library named by the environment");
+
+        for algorithm in [
+            DeflateAlgorithm::LowRatio,
+            DeflateAlgorithm::MediumRatio,
+            DeflateAlgorithm::HighRatio,
+            DeflateAlgorithm::MaxRatio,
+        ] {
+            let opts = DeflateCompressOpts::new(algorithm);
+            let temp = |chunks: usize, chunk_bytes: usize| {
+                lib.deflate_compress_temp_size(chunks, chunk_bytes, chunks * chunk_bytes, opts)
+                    .expect("querying compression temp size")
+            };
+
+            let per_chunk = temp(1, MAX_COMPRESS_CHUNK_BYTES);
+            for chunks in [1usize, 7, 64, 1024, 16384] {
+                let measured = temp(chunks, MAX_COMPRESS_CHUNK_BYTES);
+                let modelled = per_chunk * chunks;
+
+                // Exact at `HighRatio` and `MaxRatio`. The lower rungs deviate
+                // by a few parts per million — measured 8 KiB in 369 MB at
+                // `LowRatio` — which is neither a fixed overhead nor a clean
+                // per-chunk constant, so it is bounded relatively rather than
+                // modelled. A sizer that divides a budget by the per-chunk cost
+                // and rounds down is unaffected either way; what would break it
+                // is superlinear growth, and that is what this rules out.
+                let slack = modelled.abs_diff(measured);
+                assert!(
+                    slack * 1000 <= modelled,
+                    "scratch is not linear in the chunk count at {algorithm:?}: \
+                     {chunks} chunks measured {measured}, modelled {modelled}"
+                );
+                if matches!(
+                    algorithm,
+                    DeflateAlgorithm::HighRatio | DeflateAlgorithm::MaxRatio
+                ) {
+                    assert_eq!(
+                        measured, modelled,
+                        "scratch should be exactly linear at {algorithm:?}"
+                    );
+                }
+            }
+
+            // Smaller chunks must want less scratch, or sizing a batch by the
+            // 64 KiB worst case would not be conservative.
+            assert!(
+                temp(64, MAX_COMPRESS_CHUNK_BYTES / 2) < temp(64, MAX_COMPRESS_CHUNK_BYTES),
+                "scratch should fall with chunk size at {algorithm:?}"
+            );
+        }
+    }
+
+    /// nvCOMP's chunk ceiling and BGZF's block ceiling are the same number.
+    ///
+    /// Pinned because the whole "the batched API *is* the BGZF block model"
+    /// argument rests on it, and a BGZF block may legally carry exactly 65536
+    /// uncompressed bytes — so this is the boundary, not a comfortable margin.
+    #[test]
+    fn the_chunk_ceiling_matches_a_full_bgzf_block() {
+        assert_eq!(MAX_COMPRESS_CHUNK_BYTES, fritillaria_core::MAX_BLOCK_SIZE);
+    }
+
+    /// Our default is deliberately not nvCOMP's, and not Parabricks'.
+    #[test]
+    fn the_default_algorithm_favours_ratio_over_throughput() {
+        assert_eq!(DeflateAlgorithm::default(), DeflateAlgorithm::HighRatio);
+        // nvCOMP's own default is 1 and Parabricks ships 0; both are below us.
+        assert!(DeflateAlgorithm::default() as i32 > DeflateAlgorithm::LowRatio as i32);
+        assert_eq!(
+            DeflateCompressOpts::new(DeflateAlgorithm::default()).algorithm,
+            4
+        );
     }
 
     #[test]
