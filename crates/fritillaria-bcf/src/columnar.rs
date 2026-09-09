@@ -41,12 +41,14 @@
 //! different type from [`crate::Record`], the vendored owning record.
 
 pub mod batch;
+pub mod device;
 pub mod header;
 pub mod record;
 pub mod speculative;
 pub mod typed;
 
 pub use batch::RecordBatch;
+pub use device::{DeviceColumns, DeviceRecordBatch, ID_START};
 pub use header::{Dictionary, Header, parse_header};
 pub use record::{
     Allele, FormatField, FormatFields, InfoFields, MIN_RECORD_SIZE, Record, RecordBounds,

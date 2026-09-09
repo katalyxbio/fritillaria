@@ -110,6 +110,37 @@ impl BcfScanner {
             ))
         }
     }
+
+    /// Scans a batch and decodes its site cores into device-resident columns.
+    ///
+    /// The BCF counterpart of [`BamDecoder::decode`](crate::BamDecoder::decode),
+    /// and the point of the whole path: a device-resident inflate batch goes in,
+    /// parsed columns come out, and nothing but three totals returns to the
+    /// host.
+    ///
+    /// The returned batch **borrows** `batch` in every practical sense: its
+    /// variable-length bounds are offsets into that buffer, so the inflate batch
+    /// must outlive it. See
+    /// [`DeviceRecordBatch`](fritillaria_bcf::columnar::DeviceRecordBatch).
+    pub fn decode(
+        &self,
+        batch: &DeviceInflateBatch,
+        start: usize,
+        samples: u32,
+        contigs: u32,
+    ) -> Result<fritillaria_bcf::columnar::DeviceRecordBatch> {
+        #[cfg(feature = "cuda")]
+        {
+            self.inner.decode(batch, start, samples, contigs)
+        }
+        #[cfg(not(feature = "cuda"))]
+        {
+            let _ = (batch, start, samples, contigs);
+            Err(Error::CudaUnavailable(
+                "built without the `cuda` feature".to_string(),
+            ))
+        }
+    }
 }
 
 #[cfg(feature = "cuda")]
@@ -119,8 +150,8 @@ mod cuda_impl {
     use cudarc::driver::{
         CudaContext as RawContext, CudaFunction, CudaSlice, CudaStream, LaunchConfig, PushKernelArg,
     };
-    use fritillaria_bcf::columnar::{Proof, SpeculativeScan};
-    use fritillaria_core::{DeviceInflateBatch, Error, Result};
+    use fritillaria_bcf::columnar::{DeviceColumns, DeviceRecordBatch, Proof, SpeculativeScan};
+    use fritillaria_core::{DeviceBuffer, DeviceInflateBatch, Error, Result};
 
     use crate::backend::{CudaAlloc, driver_err, load_kernel};
 
@@ -145,6 +176,7 @@ mod cuda_impl {
         validate: CudaFunction,
         probe_tail: CudaFunction,
         walk: CudaFunction,
+        decode_fn: CudaFunction,
         ordinal: i32,
     }
 
@@ -179,6 +211,7 @@ mod cuda_impl {
                 validate: load_kernel(&ctx, src, "bcf_scan.cu", "bcf_validate")?,
                 probe_tail: load_kernel(&ctx, src, "bcf_scan.cu", "bcf_probe_tail")?,
                 walk: load_kernel(&ctx, src, "bcf_scan.cu", "bcf_walk")?,
+                decode_fn: load_kernel(&ctx, src, "bcf_scan.cu", "bcf_decode")?,
                 _ctx: ctx,
                 stream,
                 ordinal,
@@ -405,6 +438,177 @@ mod cuda_impl {
                     records: n,
                 },
             })
+        }
+
+        /// Scan, then decode the site cores into columns.
+        ///
+        /// The offsets round-trip through the host between the two phases,
+        /// because the tiling proof runs there. That transfer scales with the
+        /// *record count*, not the data — which is the distinction that makes
+        /// it acceptable when the whole point of this path is to delete the
+        /// transfer that scales with the data. It is also the first thing to
+        /// measure; see `docs/bcf-boundaries.md`.
+        pub(super) fn decode(
+            &self,
+            batch: &DeviceInflateBatch,
+            start: usize,
+            samples: u32,
+            contigs: u32,
+        ) -> Result<DeviceRecordBatch> {
+            let scan = self.scan(batch, start, samples, contigs)?;
+            let n = scan.offsets.len();
+
+            let Some(data) = batch.data() else {
+                return self.empty_batch(scan.tail);
+            };
+            if n == 0 {
+                return self.empty_batch(scan.tail);
+            }
+
+            let alloc = data
+                .alloc()
+                .as_any()
+                .downcast_ref::<CudaAlloc>()
+                .ok_or_else(|| {
+                    Error::Cuda("batch was not produced by the CUDA backend".to_string())
+                })?;
+
+            // Uploaded as bytes rather than as u64 so the same allocation can
+            // be handed straight over as the `record_offsets` column: a
+            // `CudaSlice<u64>` cannot be reinterpreted into one without copying.
+            // The kernel reads it as `const u64*`, which is what it is.
+            let mut offset_bytes = Vec::with_capacity(n * 8);
+            for &o in &scan.offsets {
+                offset_bytes.extend_from_slice(&(o as u64).to_le_bytes());
+            }
+            let offsets = self
+                .stream
+                .clone_htod(&offset_bytes)
+                .map_err(driver_err("uploading record offsets"))?;
+
+            let mut chromosome_id = self.bytes(n * 4)?;
+            let mut position = self.bytes(n * 4)?;
+            let mut reference_span = self.bytes(n * 4)?;
+            let mut quality = self.bytes(n * 4)?;
+            let mut info_count = self.bytes(n * 2)?;
+            let mut allele_count = self.bytes(n * 2)?;
+            let mut sample_count = self.bytes(n * 4)?;
+            let mut format_count = self.bytes(n)?;
+            let mut alleles_start = self.bytes(n * 4)?;
+            let mut filters_start = self.bytes(n * 4)?;
+            let mut info_start = self.bytes(n * 4)?;
+            let mut genotypes_start = self.bytes(n * 4)?;
+            let mut record_end = self.bytes(n * 4)?;
+            let mut errors = self.zeros::<u32>(1)?;
+
+            let len_u64 = data.byte_len() as u64;
+            let n_u32 = u32::try_from(n)
+                .map_err(|_| Error::Cuda("record count exceeds u32".to_string()))?;
+
+            let mut builder = self.stream.launch_builder(&self.decode_fn);
+            builder
+                .arg(alloc.slice())
+                .arg(&len_u64)
+                .arg(&offsets)
+                .arg(&n_u32)
+                .arg(&mut chromosome_id)
+                .arg(&mut position)
+                .arg(&mut reference_span)
+                .arg(&mut quality)
+                .arg(&mut info_count)
+                .arg(&mut allele_count)
+                .arg(&mut sample_count)
+                .arg(&mut format_count)
+                .arg(&mut alleles_start)
+                .arg(&mut filters_start)
+                .arg(&mut info_start)
+                .arg(&mut genotypes_start)
+                .arg(&mut record_end)
+                .arg(&mut errors);
+            // SAFETY: the kernel signature matches. Every column was allocated
+            // with `n` elements of the width the kernel writes, and thread i
+            // writes only element i of each. `offsets` holds `n` entries the
+            // scan produced on this same stream.
+            unsafe { builder.launch(grid(n)) }.map_err(driver_err("launching bcf_decode"))?;
+
+            let failures = self.read(&errors)?[0];
+            if failures != 0 {
+                // Refusing the whole batch rather than returning columns that
+                // are right for most rows. A partial decode is precisely the
+                // silent-wrong-data failure this project treats as worse than
+                // being slow.
+                return Err(Error::Malformed {
+                    format: "bcf",
+                    position: start as u64,
+                    reason: format!("{failures} of {n} records failed the typed-value walk"),
+                });
+            }
+
+            let columns = DeviceColumns {
+                chromosome_id: self.column(chromosome_id, n * 4)?,
+                position: self.column(position, n * 4)?,
+                reference_span: self.column(reference_span, n * 4)?,
+                quality: self.column(quality, n * 4)?,
+                info_count: self.column(info_count, n * 2)?,
+                allele_count: self.column(allele_count, n * 2)?,
+                sample_count: self.column(sample_count, n * 4)?,
+                format_count: self.column(format_count, n)?,
+                record_offsets: self.column(offsets, n * 8)?,
+                alleles_start: self.column(alleles_start, n * 4)?,
+                filters_start: self.column(filters_start, n * 4)?,
+                info_start: self.column(info_start, n * 4)?,
+                genotypes_start: self.column(genotypes_start, n * 4)?,
+                record_end: self.column(record_end, n * 4)?,
+            };
+            DeviceRecordBatch::new(n, scan.tail, columns)
+        }
+
+        /// A zero-sized CUDA allocation is invalid, so every column is at least
+        /// one byte; `DeviceBuffer` records the logical length separately.
+        fn bytes(&self, n: usize) -> Result<CudaSlice<u8>> {
+            self.stream
+                .alloc_zeros::<u8>(n.max(1))
+                .map_err(driver_err("allocating column"))
+        }
+
+        fn column(&self, slice: CudaSlice<u8>, bytes: usize) -> Result<DeviceBuffer> {
+            let ready = self
+                .stream
+                .record_event(None)
+                .map_err(driver_err("recording completion event"))?;
+            Ok(DeviceBuffer::new(Box::new(CudaAlloc {
+                slice,
+                len: bytes,
+                stream: self.stream.clone(),
+                ready,
+                ordinal: self.ordinal,
+            })))
+        }
+
+        /// No records: every column empty, and the tail is where we stopped.
+        fn empty_batch(&self, tail: usize) -> Result<DeviceRecordBatch> {
+            let column = |width: usize| -> Result<DeviceBuffer> {
+                let slice = self.bytes(0)?;
+                let _ = width;
+                self.column(slice, 0)
+            };
+            let columns = DeviceColumns {
+                chromosome_id: column(4)?,
+                position: column(4)?,
+                reference_span: column(4)?,
+                quality: column(4)?,
+                info_count: column(2)?,
+                allele_count: column(2)?,
+                sample_count: column(4)?,
+                format_count: column(1)?,
+                record_offsets: column(8)?,
+                alleles_start: column(4)?,
+                filters_start: column(4)?,
+                info_start: column(4)?,
+                genotypes_start: column(4)?,
+                record_end: column(4)?,
+            };
+            DeviceRecordBatch::new(0, tail, columns)
         }
     }
 
