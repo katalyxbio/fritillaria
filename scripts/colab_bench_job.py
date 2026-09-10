@@ -304,7 +304,11 @@ def main():
             print("  FAILED to stage the uncompressed input", flush=True)
         else:
             raw_size = os.path.getsize(plain)
-            for n in dict.fromkeys([1, max(1, threads - 1)]):
+            # All-cores first, single-thread second. Compressing 10 GiB on one
+            # core takes minutes, and if anything truncates this run it should
+            # lose the per-core curiosity rather than the number the GPU is
+            # actually compared against. Same lesson as bounding the ladder.
+            for n in dict.fromkeys([max(1, threads - 1), 1]):
                 started = _time.monotonic()
                 code = subprocess.run(
                     f"bgzip -c -@ {n} {plain} > /content/out.gz", shell=True
