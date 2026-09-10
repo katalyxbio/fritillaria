@@ -141,18 +141,41 @@ mod bench {
         }
     }
 
+    /// Payload the ladder sweeps, in bytes.
+    ///
+    /// **Bounded on purpose, and the first run of this example is why.** The
+    /// ladder originally swept the whole 10 GiB at every rung; `HighRatio` alone
+    /// took 95s and `MaxRatio` is slower still, so the run hit `colab exec`'s
+    /// inactivity timeout partway through and took the `bgzip` baseline down
+    /// with it — an hour of billable VM for a table missing its last row.
+    ///
+    /// Comparing rungs never needed the whole file: they are being measured
+    /// against each other, and a gigabyte of real WGS payload is ample for that.
+    /// The full-file number comes from the sweep above, at the shipping level.
+    const LADDER_BYTES: usize = 1 << 30;
+
     /// The ladder, timed rather than only sized.
     ///
-    /// `docs/compression.md` argues the default from ratio and VRAM. This is the
-    /// third axis, and the one nothing has measured: what level 4 costs in time
-    /// against the entropy-only setting Parabricks ships.
+    /// `docs/compression.md` argued the default from ratio and VRAM alone. This
+    /// is the third axis, and measuring it moved the default from `4` to `2`.
     pub(crate) fn report_ladder(
         data: &DeviceBuffer,
         bounds: &[usize],
-        uncompressed: u64,
         chunks_per_batch: usize,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        println!("\n-- the ratio/throughput ladder --\n");
+        // A prefix of the chunk list, so every rung sees the same data and the
+        // slow ones stay affordable.
+        let cut = bounds
+            .iter()
+            .position(|&b| b - bounds[0] >= LADDER_BYTES)
+            .map_or(bounds.len(), |i| i + 1);
+        let bounds = &bounds[..cut];
+        let uncompressed = (bounds[bounds.len() - 1] - bounds[0]) as u64;
+
+        println!(
+            "\n-- the ratio/throughput ladder ({:.0} MiB, a prefix) --\n",
+            mib(uncompressed)
+        );
         println!(
             "  {:>14}  {:>10}  {:>12}  {:>8}  {:>14}",
             "algorithm", "wall", "MiB/s in", "ratio", "scratch/chunk"
@@ -228,7 +251,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .zip(&passes)
         .min_by_key(|(_, (_, p))| p.wall)
         .map_or(1024, |(c, _)| *c);
-    bench::report_ladder(data, &bounds, uncompressed, best)?;
+    bench::report_ladder(data, &bounds, best)?;
 
     Ok(())
 }

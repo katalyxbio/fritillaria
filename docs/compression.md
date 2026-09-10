@@ -428,6 +428,67 @@ rented VM spent on the same shape of mistake — a test asserting several batche
 over a fixture that arrived in one — and this is that lesson applied before the
 fact rather than after.
 
+## Throughput measured, 2026-09-10 — and it moves the default from 4 to 2
+
+The axis this document argued the default *without*. L4, nvCOMP 5.3.0.16,
+10,348 MiB of real WGS payload already resident in VRAM, through
+`DeviceBgzfWriter`.
+
+| `algorithm` | wall | MiB/s in | ratio | scratch/chunk |
+|---|---|---|---|---|
+| 0 entropy-only | 5.90s | 1753 | 1.58x | 0 |
+| 1 low | 5.95s | 1738 | 2.92x | 360,488 |
+| **2 medium** | **7.13s** | **1451** | **3.22x** | 655,400 |
+| 4 high *(was our default)* | 95.41s | 108 | 3.26x | 1,114,440 |
+| 5 max | *not measured — see below* | | | |
+
+**Level 4 costs 13x the wall clock for 1.2% more compression than level 2.**
+Against htslib's own 3.37x on this file, level 2 is 4.7% larger and level 4 is
+3.4% larger — so the old default was buying **1.3 percentage points of file
+size for 88 extra seconds per 10 GiB**.
+
+### Why this overturns the decision rather than qualifying it
+
+The argument for level 4 was that a size penalty is permanent and paid by every
+future reader, while a time cost is paid once. That reasoning is still right; the
+rung it picked was wrong, for a reason only measurement could show:
+
+- **At 108 MiB/s the write path is 10x slower than the read path.** Reading the
+  same file to records runs at 1040 MiB/s. A pipeline that reads at 1040 and
+  writes at 108 has not been accelerated — it has moved its bottleneck. Level 2
+  at 1451 MiB/s is *faster* than the read path, so the two stay balanced.
+- **The 1.2% it buys is not the "permanent cost" the argument was about.** That
+  argument was aimed at entropy-only, which measures **+75.1%** against htslib
+  and is genuinely disqualifying. Between 2 and 4 there is no such gap.
+- **The header's labels were the anchor, and they are about zlib.** "Beats Zlib
+  level 6" (4) sounded decisive next to "beats Zlib level 1" (2). On real WGS the
+  two land 1.2% apart, and the label carried no information about cost.
+
+So: **spend the ratio that is nearly free, not the ratio that costs 13x.** Levels
+4 and 5 stay exposed for an archival write where wall clock genuinely does not
+matter, and the level remains caller-visible.
+
+Level 1 is worth noting as the runner-up — 2.92x at essentially level 0's speed —
+but it gives up 15% of file size against htslib, which is the kind of permanent
+cost the original argument was right to refuse.
+
+### What this run did not produce, and why
+
+`MaxRatio` and the `bgzip -c` baseline are **missing, and the benchmark's design
+is why.** The ladder swept all 10 GiB at every rung; level 4 took 95s, level 5 is
+slower still, and the run hit `colab exec`'s inactivity timeout partway through —
+taking the baseline, which runs afterwards, down with it. An hour of billable VM
+for a table missing its last row and its comparison.
+
+The safety machinery worked: no `[combined] OK` sentinel was printed, the run
+reported failure, and the session was released. The waste was real anyway.
+
+Fixed by bounding the ladder to a 1 GiB prefix (`LADDER_BYTES`). Comparing rungs
+never needed the whole file — they are being measured against each other — and
+the full-file number comes from the sweep, at the shipping level. **The general
+lesson: a benchmark whose most expensive stage is unbounded will eventually eat
+the stages after it, and those are the ones with the baseline in them.**
+
 ## What is still unmeasured
 
 Two of the three questions this section opened with are now answered on hardware
@@ -436,12 +497,11 @@ Two of the three questions this section opened with are now answered on hardware
 1. ~~**nvCOMP's actual ratio at each level on real BAM and BCF payloads.**~~
    Measured 2026-09-10: +0.8% to +5.4% against htslib at level 4, and +75.1% at
    level 0.
-2. **Throughput.** Still entirely unmeasured — nothing here has been *timed*.
-   The tests assert ratio and correctness and say nothing about speed, and the
-   9.39 GB/s figure NVIDIA quotes for an H100 is presumably level 0 or 1 and does
-   not transfer to level 4 on an L4. **Do not quote a compression throughput
-   number; there is not one.** The obvious next step is a `bench_compress`
-   example alongside `bench_decode`, over the same 3 GiB WGS prefix.
+2. ~~**Throughput.**~~ Measured 2026-09-10; see above. What remains is
+   `MaxRatio`, and **the `bgzip -c` baseline** — so there is still no answer to
+   "is 1451 MiB/s good?", only to "which rung is best". Until that baseline
+   exists, do not claim compression is faster than the CPU; claim only that the
+   default is the right rung.
 3. ~~**Whether the output is spec-valid BGZF that samtools accepts.**~~ Cleared
    for the host path locally and for the device path on the VM: `samtools`
    1.19.2 read a GPU-compressed BAM and agreed on the record count.

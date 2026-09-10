@@ -245,8 +245,15 @@ def main():
             print("\n[bench] NVCOMP=0 — no compression benchmark (our kernel "
                   "does not compress)", flush=True)
 
+    # The baseline runs *last* by history rather than by design, and the first
+    # combined run showed why that is wrong: the compression benchmark ahead of
+    # it overran `colab exec`'s timeout and took the baseline down with it, so an
+    # hour of billable VM produced GPU numbers with nothing to compare them
+    # against. The expensive stage is now bounded (see bench_compress's
+    # LADDER_BYTES), which is the real fix; keep the cheap, load-bearing step
+    # from being the one that gets cut.
     print("\n" + "=" * 68, flush=True)
-    print("HTSLIB BASELINE (bgzip -d: same workload, same file, same machine)", flush=True)
+    print("HTSLIB BASELINE (bgzip: same workload, same file, same machine)", flush=True)
     print("=" * 68, flush=True)
     if subprocess.run("command -v bgzip", shell=True).returncode != 0:
         run("apt-get install -y -qq tabix >/dev/null 2>&1 || "

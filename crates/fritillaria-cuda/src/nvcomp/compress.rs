@@ -14,7 +14,7 @@
 //! |---|---|---|
 //! | output alignment | 1 | **8** |
 //! | output size known before the launch? | yes, from `ISIZE` | **no** |
-//! | temp workspace | 0 bytes | **1.11 MB per chunk** at our default level |
+//! | temp workspace | 0 bytes | **0.66 MB per chunk** at our default level |
 //!
 //! The first two combine into the pass the read path does not need. Inflate
 //! writes straight into a dense buffer because the inflated size of every block
@@ -62,17 +62,19 @@ const FRAME_BLOCK_DIM: u32 = 256;
 ///
 /// # Why this is not a detail
 ///
-/// Compression scratch is **1.11 MB per 64 KiB chunk** at
-/// [`DeflateAlgorithm::HighRatio`], against zero for decompression. Add the
-/// padded output slot and the dense output and a chunk costs ~1.39 MB, so a
-/// 16 GiB T4 holds roughly **11,000 blocks** where the read path put 166,012 in
-/// one batch. Compression batches are ~15x smaller, and the reason is scratch,
+/// Compression scratch is **0.66 MB per 64 KiB chunk** at the shipping default
+/// [`DeflateAlgorithm::MediumRatio`], against zero for decompression. Add the
+/// padded output slot and the dense output and a chunk costs ~0.87 MB, so a
+/// 16 GiB T4 holds roughly **19,000 blocks** where the read path put 166,012 in
+/// one batch. Compression batches are ~9x smaller, and the reason is scratch,
 /// not data.
 ///
-/// The ratio ladder is also a VRAM ladder — `EntropyOnly` needs no scratch at
-/// all and fits 6.2x more blocks per batch — which the nvCOMP header does not
-/// mention and which is a real argument for Parabricks' faster default. See
-/// `docs/compression.md`.
+/// **The ratio ladder is also a VRAM ladder**, which the nvCOMP header does not
+/// mention: `EntropyOnly` needs no scratch at all, and `HighRatio` needs
+/// 1.11 MB — 1.7x the default, on top of being 13x slower. Choosing ratio costs
+/// throughput twice, in the kernel and again in more launches over smaller
+/// batches. See `docs/compression.md`, where measuring the first of those moved
+/// the default off `HighRatio`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CompressBudget {
     /// Scratch nvCOMP wants, per chunk.
@@ -746,8 +748,14 @@ impl BlockCompressor for NvcompCompressor {
 mod tests {
     use super::*;
 
-    /// The measured L4/T4 figures at `HighRatio`, so the arithmetic is checked
-    /// against the numbers the design was argued from rather than round ones.
+    /// Measured figures at `HighRatio`, so the arithmetic is checked against
+    /// real numbers rather than round ones.
+    ///
+    /// Deliberately *not* the shipping default's: this is the most expensive
+    /// rung, so a sizer that is correct here is correct everywhere. The exact
+    /// values are device-dependent anyway — an L4 reports 1,114,440 where this
+    /// machine reports 1,114,184 — which is why nothing in the library uses
+    /// them and `CompressBudget` queries the device instead.
     fn measured_budget() -> CompressBudget {
         CompressBudget {
             scratch_per_chunk: 1_114_184,

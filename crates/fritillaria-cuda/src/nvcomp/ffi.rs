@@ -119,17 +119,33 @@ impl fmt::Debug for DeflateCompressOpts {
 /// The `algorithm` field of [`DeflateCompressOpts`], with NVIDIA's own
 /// descriptions from `deflate.h`.
 ///
-/// # Why the default is [`DeflateAlgorithm::HighRatio`] and not nvCOMP's
+/// # Why the default is [`DeflateAlgorithm::MediumRatio`], and why it was `4`
 ///
 /// nvCOMP defaults to `1`, and NVIDIA Parabricks' `--gpuwrite-deflate-algo`
 /// defaults to `0` — entropy-only. Both optimise for throughput, which is the
-/// right call for a batch aligner whose BAM is often an intermediate.
+/// right call for a batch aligner whose BAM is often an intermediate. A library
+/// does not get to assume that: the file we write is somebody's archive, and a
+/// size penalty is paid by every future reader of it.
 ///
-/// A library does not get to assume that: the file we write is somebody's
-/// archive, and a measured 20–48% size penalty (see `docs/compression.md`) is
-/// paid by every future reader of it. `4` is the first rung NVIDIA documents as
-/// beating Zlib level 6, which is roughly where output size reaches parity with
-/// the libdeflate-level-6 that htslib writes.
+/// **That argument picked `4`, and measuring throughput showed `4` was the
+/// wrong rung for it.** On an L4 over 10 GiB of real WGS payload
+/// (`docs/compression.md`):
+///
+/// | rung | wall | ratio |
+/// |---|---|---|
+/// | 2 `MediumRatio` | **7.1s** | **3.22x** |
+/// | 4 `HighRatio` | 95.4s | 3.26x |
+///
+/// `4` costs **13x the wall clock for 1.2% more compression**. Worse, at
+/// 108 MiB/s it makes writing an order of magnitude slower than reading
+/// (1040 MiB/s to records), so the write path becomes the bottleneck of any
+/// pipeline that uses it — which defeats the point of accelerating either half.
+/// `2` runs at 1451 MiB/s, comfortably ahead of the read path, and lands 4.7%
+/// over htslib's own output against `4`'s 3.4%.
+///
+/// So the ratio argument stands and its conclusion moved: **spend the ratio you
+/// can get for free, not the ratio that costs 13x.** `4` and `5` remain
+/// available for an archival write where wall clock genuinely does not matter.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[repr(i32)]
 pub enum DeflateAlgorithm {
@@ -137,11 +153,14 @@ pub enum DeflateAlgorithm {
     EntropyOnly = 0,
     /// High throughput, low ratio. nvCOMP's own default.
     LowRatio = 1,
-    /// Medium; documented as beating Zlib level 1.
+    /// Medium; documented as beating Zlib level 1, and **measured within 1.2%
+    /// of `HighRatio` at 13x the speed**. Ours — see the type's docs.
+    #[default]
     MediumRatio = 2,
     /// Lower throughput, higher ratio; documented as beating Zlib level 6.
-    /// Ours, and see the type's docs for why it is not nvCOMP's.
-    #[default]
+    ///
+    /// 3.4% over htslib rather than `MediumRatio`'s 4.7%, for 13x the wall
+    /// clock. For an archival write where time does not matter.
     HighRatio = 4,
     /// Lowest throughput, highest ratio.
     MaxRatio = 5,
@@ -1015,13 +1034,16 @@ mod tests {
 
     /// Our default is deliberately not nvCOMP's, and not Parabricks'.
     #[test]
-    fn the_default_algorithm_favours_ratio_over_throughput() {
-        assert_eq!(DeflateAlgorithm::default(), DeflateAlgorithm::HighRatio);
-        // nvCOMP's own default is 1 and Parabricks ships 0; both are below us.
+    fn the_default_algorithm_buys_the_ratio_that_is_nearly_free() {
+        assert_eq!(DeflateAlgorithm::default(), DeflateAlgorithm::MediumRatio);
+        // Above nvCOMP's own default of 1 and Parabricks' 0 — a library writes
+        // somebody's archive — but below 4, which measured 13x slower for 1.2%
+        // more compression. See the type's docs.
         assert!(DeflateAlgorithm::default() as i32 > DeflateAlgorithm::LowRatio as i32);
+        assert!((DeflateAlgorithm::default() as i32) < DeflateAlgorithm::HighRatio as i32);
         assert_eq!(
             DeflateCompressOpts::new(DeflateAlgorithm::default()).algorithm,
-            4
+            2
         );
     }
 
