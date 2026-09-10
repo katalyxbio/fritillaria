@@ -217,11 +217,18 @@ impl FramePlan {
 
 /// Splits `bounds` into per-chunk offsets and lengths, checking the shape.
 fn chunk_extents(byte_len: usize, bounds: &[usize]) -> Result<(Vec<u64>, Vec<u32>)> {
-    if bounds.first() != Some(&0) || bounds.last() != Some(&byte_len) {
+    // `bounds` names ranges and need not cover the buffer — that is what lets a
+    // writer batch a large file out of one allocation. The check that matters is
+    // the one that would otherwise be an out-of-bounds *device* read, which is
+    // far harder to diagnose than an error here.
+    let Some(&last) = bounds.last() else {
+        return Err(Error::Cuda(
+            "bounds must have at least one entry".to_string(),
+        ));
+    };
+    if last > byte_len {
         return Err(Error::Cuda(format!(
-            "bounds {:?}..{:?} do not describe {byte_len} device bytes",
-            bounds.first(),
-            bounds.last()
+            "bounds reach byte {last} of {byte_len} device bytes"
         )));
     }
 
@@ -868,14 +875,26 @@ mod tests {
     }
 
     #[test]
-    fn chunk_extents_rejects_bounds_that_do_not_describe_the_buffer() {
-        assert!(chunk_extents(10, &[1, 10]).is_err());
-        assert!(chunk_extents(10, &[0, 4]).is_err());
+    fn chunk_extents_rejects_bounds_that_would_read_past_the_buffer() {
+        // What matters on a device: reading outside the allocation. An error
+        // here is a diagnosis; the same mistake in a kernel is a fault.
+        assert!(chunk_extents(10, &[0, 11]).is_err());
+        assert!(chunk_extents(10, &[12, 12]).is_err());
         assert!(chunk_extents(10, &[0, 10, 2, 10]).is_err());
         assert!(chunk_extents(10, &[]).is_err());
 
         let (offsets, lengths) = chunk_extents(10, &[0, 4, 4, 10]).unwrap();
         assert_eq!(offsets, [0, 4, 4]);
         assert_eq!(lengths, [4, 0, 6]);
+    }
+
+    /// A window of the buffer is legal, and it is what a writer batching a large
+    /// file passes — a `DeviceBuffer` cannot be sub-sliced, so the range has to
+    /// travel in the bounds.
+    #[test]
+    fn chunk_extents_accepts_a_window_of_the_buffer() {
+        let (offsets, lengths) = chunk_extents(100, &[20, 30, 45]).unwrap();
+        assert_eq!(offsets, [20, 30]);
+        assert_eq!(lengths, [10, 15]);
     }
 }

@@ -116,7 +116,7 @@ pub use fritillaria_htsget as htsget;
 #[doc(inline)]
 pub use fritillaria_refget as refget;
 
-pub use fritillaria_bgzf::{CpuCodec, CpuCompressor};
+pub use fritillaria_bgzf::{CpuCodec, CpuCompressor, DeviceBgzfWriter};
 pub use fritillaria_core::{
     BlockCodec, BlockCompressor, BlockSpan, CompressedBatch, DeviceBlockCompressor, Error,
     InflateBatch, MAX_COMPRESSIBLE_PAYLOAD, Result, VirtualOffset,

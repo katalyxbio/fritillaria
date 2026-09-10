@@ -24,10 +24,11 @@
 
 use fritillaria_core::device::testing::HostAlloc;
 use fritillaria_core::{
-    BlockCodec, BlockSpan, DeviceBlockCodec, DeviceBuffer, DeviceInflateBatch, InflateBatch, Result,
+    BlockCodec, BlockCompressor, BlockSpan, CompressedBatch, DeviceBlockCodec,
+    DeviceBlockCompressor, DeviceBuffer, DeviceInflateBatch, Error, InflateBatch, Result,
 };
 
-use crate::cpu::CpuCodec;
+use crate::cpu::{CpuCodec, CpuCompressor};
 
 /// A device codec backed by host memory, for testing the device seam.
 #[derive(Clone, Copy, Debug, Default)]
@@ -81,12 +82,93 @@ impl DeviceBlockCodec for HostDeviceCodec {
     }
 }
 
+/// A [`DeviceBlockCompressor`] backed by host memory, for testing the writer.
+///
+/// The write-side twin of [`HostDeviceCodec`], and it exists for a sharper
+/// reason than symmetry. The batching loop in
+/// [`DeviceBgzfWriter`](crate::DeviceBgzfWriter) — how a chunk list is split
+/// across batches, where a batch boundary lands, what happens at the seam — is
+/// pure host logic with no kernel in it. CLAUDE.md records a GPU run wasted on
+/// exactly that class of mistake: a test asserted several batches and the
+/// fixture arrived in one, which cost a rented VM to discover and a second to
+/// confirm. This makes that a local second.
+#[derive(Clone, Copy, Debug)]
+pub struct HostDeviceCompressor {
+    ordinal: i32,
+    level: u8,
+}
+
+impl Default for HostDeviceCompressor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl HostDeviceCompressor {
+    /// Creates the compressor, reporting device 0.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            ordinal: 0,
+            level: 6,
+        }
+    }
+
+    /// Creates the compressor reporting a specific device ordinal.
+    #[must_use]
+    pub const fn on_device(ordinal: i32) -> Self {
+        Self { ordinal, level: 6 }
+    }
+
+    /// Sets the deflate level passed through to [`CpuCompressor`].
+    #[must_use]
+    pub const fn with_level(mut self, level: u8) -> Self {
+        self.level = level;
+        self
+    }
+}
+
+impl DeviceBlockCompressor for HostDeviceCompressor {
+    fn name(&self) -> &'static str {
+        "host-device-compress-stub"
+    }
+
+    fn device_ordinal(&self) -> i32 {
+        self.ordinal
+    }
+
+    fn compress_batch_device(
+        &self,
+        data: &DeviceBuffer,
+        bounds: &[usize],
+        out: &mut CompressedBatch,
+    ) -> Result<()> {
+        // Checked here rather than left to the CPU compressor, because a real
+        // backend cannot read another allocator's memory and a stub that
+        // silently could would hide that from every test written against it.
+        if data.device_ordinal() != self.ordinal {
+            return Err(Error::InvalidDeviceBatch {
+                reason: format!(
+                    "input is on device {} but this compressor is on device {}",
+                    data.device_ordinal(),
+                    self.ordinal
+                ),
+            });
+        }
+
+        let bytes = data.to_vec()?;
+        CpuCompressor::new()
+            .with_level(self.level)
+            .compress_batch(&bytes, bounds, out)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::block::EOF_BLOCK;
     use crate::discover::discover_blocks;
     use crate::write::BgzfWriter;
-    use fritillaria_core::Error;
 
     fn encode(payloads: &[&[u8]]) -> Vec<u8> {
         let mut writer = BgzfWriter::new(Vec::new());
@@ -217,5 +299,64 @@ mod tests {
         assert!(out.is_empty());
         assert_eq!(out.byte_len(), 0);
         assert!(out.to_host().unwrap().is_empty());
+    }
+
+    // --- the compressor stub -------------------------------------------------
+
+    /// The stub must produce what the host reference produces, or every test
+    /// written against it is testing the stub rather than the seam.
+    #[test]
+    fn the_compressor_stub_matches_the_host_reference() {
+        let data: Vec<u8> = (0..5000u32).map(|i| (i % 251) as u8).collect();
+        let bounds = vec![0, 100, 100, 4000, 5000];
+
+        let mut host = CompressedBatch::new();
+        CpuCompressor::new()
+            .compress_batch(&data, &bounds, &mut host)
+            .unwrap();
+
+        let mut device = CompressedBatch::new();
+        HostDeviceCompressor::new()
+            .compress_batch_device(&HostAlloc::buffer(data), &bounds, &mut device)
+            .unwrap();
+
+        assert_eq!(device.data(), host.data());
+        assert_eq!(device.offsets(), host.offsets());
+    }
+
+    /// Compressing a *window* is what a writer batching a large file does, so
+    /// the stub has to support it or the writer's loop is untestable here.
+    #[test]
+    fn the_compressor_stub_compresses_a_window_of_the_buffer() {
+        let data = b"alphabetagamma".to_vec();
+
+        let mut out = CompressedBatch::new();
+        HostDeviceCompressor::new()
+            .compress_batch_device(&HostAlloc::buffer(data), &[5, 9], &mut out)
+            .unwrap();
+        assert_eq!(out.len(), 1);
+
+        let mut stream = out.data().to_vec();
+        stream.extend_from_slice(&EOF_BLOCK);
+        let spans = discover_blocks(&stream, 0).unwrap();
+        let mut inflated = InflateBatch::new();
+        CpuCodec::new()
+            .inflate_batch(&stream, &spans, &mut inflated)
+            .unwrap();
+        assert_eq!(inflated.block(0), Some(&b"beta"[..]));
+    }
+
+    /// A real backend cannot read another allocator's memory; a stub that
+    /// silently could would hide that from every test written against it.
+    #[test]
+    fn the_compressor_stub_refuses_another_device() {
+        let elsewhere = DeviceBuffer::new(Box::new(HostAlloc::on_device(b"data".to_vec(), 1)));
+        let mut out = CompressedBatch::new();
+        assert!(matches!(
+            HostDeviceCompressor::on_device(0)
+                .compress_batch_device(&elsewhere, &[0, 4], &mut out)
+                .unwrap_err(),
+            Error::InvalidDeviceBatch { .. }
+        ));
     }
 }

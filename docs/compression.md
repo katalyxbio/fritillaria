@@ -382,6 +382,52 @@ The ratio floor in `tests/nvcomp_compress.rs` is now 10% rather than the
 provisional 20%, matching the host reference. Entropy-only output would miss it
 by 65 points, which is the margin that makes it a real check.
 
+## The writer, 2026-09-10 — and the contract that made batching free
+
+`DeviceBgzfWriter` is the mirror of `DeviceBgzfReader` and the piece that closes
+the loop: a file goes out the other end from payloads that never left the
+device. It adds three things over the compressor, and each is something a caller
+would otherwise get wrong: batching against the VRAM budget, the EOF block, and
+the compressed offset a BAM writer needs to build a BAI as it goes.
+
+**One contract change made it simple, and it is a real loosening.** `bounds`
+originally had to *cover* the buffer, copying `InflateBatch::offsets`. Batching
+needs the opposite: compressing a window out of one large allocation, which on a
+device cannot be done by sub-slicing — a `DeviceBuffer` cannot be split without
+naming a backend. So `bounds` now **names ranges** and need not cover anything.
+
+The cost is honest and worth stating: "I passed the wrong bounds and silently
+compressed half my data" is no longer catchable. What is still checked is the
+part that could read past an allocation — non-decreasing, and the last entry
+inside the buffer — because that mistake is a fault inside a kernel rather than
+an error.
+
+With that, a batch is just a window of the boundary list, overlapping the
+previous by one so each starts where the last ended. **A batch boundary
+therefore always lands on a chunk boundary**, which is what makes the output
+independent of the batch size.
+
+### The test that would have been vacuous
+
+`the_output_does_not_depend_on_the_batch_size` compresses the same 40 chunks at
+1, 2, 3, 7, 39, 40, 41 and 1024 chunks per batch and requires byte-identical
+output. **A writer that ignored the knob entirely would pass it trivially** — so
+it also asserts the batch counts (40, 20, 14, 6, 2, 1, 1, 1), which is why
+`batches_run()` is public.
+
+Confirmed by mutation, and the third is the one that matters:
+
+| Mutation | Caught by |
+|---|---|
+| batch windows do not overlap (drops a chunk per batch) | 4 of 13 tests |
+| the EOF block is not written | 8 of 13 |
+| `chunks_per_batch` ignored | **only the batch-count assertion** |
+
+That third row is the whole reason the counter exists. CLAUDE.md records a
+rented VM spent on the same shape of mistake — a test asserting several batches
+over a fixture that arrived in one — and this is that lesson applied before the
+fact rather than after.
+
 ## What is still unmeasured
 
 Two of the three questions this section opened with are now answered on hardware
@@ -400,11 +446,11 @@ Two of the three questions this section opened with are now answered on hardware
    for the host path locally and for the device path on the VM: `samtools`
    1.19.2 read a GPU-compressed BAM and agreed on the record count.
 
-Also unmeasured, and it decides whether the batch sizing above is even exercised:
-**nobody has compressed anything large enough to need more than one batch.** The
-fixtures are kilobytes; `CompressBudget` says an L4 holds ~17,800 blocks and no
-test has come close. The seam that matters — a file split across batches — has no
-device-side driver to test yet, which is the missing writer in *Still open*.
+The batch-split seam is now driven, though not at realistic sizes: the writer's
+tests force one chunk per batch, so a 13-block fixture spans 13 batches — the
+hardest split available. What no test reaches is a batch that is large because
+the *data* is, which is the same gap as the throughput one and wants the same
+fixture.
 
 ## The API, transcribed
 

@@ -354,11 +354,13 @@ pub trait DeviceBlockCompressor {
     /// Which device this compressor reads from and allocates on.
     fn device_ordinal(&self) -> i32;
 
-    /// Compresses each chunk of `data` delimited by `bounds` into one block.
+    /// Compresses each range `bounds[i]..bounds[i + 1]` of `data` into one block.
     ///
     /// Same shape as [`BlockCompressor::compress_batch`][cb] with the input in
-    /// device memory: `bounds` has length `n + 1`, starts at 0, and ends at
-    /// `data.byte_len()`.
+    /// device memory, including that `bounds` **names ranges and need not cover
+    /// the buffer** — which is what lets a writer compress a large file a window
+    /// at a time out of one allocation, since a [`DeviceBuffer`] cannot be
+    /// sub-sliced without naming a backend.
     ///
     /// [cb]: crate::BlockCompressor::compress_batch
     fn compress_batch_device(
@@ -367,6 +369,33 @@ pub trait DeviceBlockCompressor {
         bounds: &[usize],
         out: &mut crate::CompressedBatch,
     ) -> Result<()>;
+}
+
+/// A shared reference to a compressor is itself a compressor.
+///
+/// Same reason as for [`DeviceBlockCodec`]: building one loads nvCOMP and
+/// compiles a kernel, so it is expensive and deliberately not `Clone`. Without
+/// this, a caller driving a
+/// [`DeviceBgzfWriter`](../fritillaria_bgzf/struct.DeviceBgzfWriter.html) —
+/// which takes the compressor by value — could not keep the compressor to build
+/// a second one.
+impl<C: DeviceBlockCompressor + ?Sized> DeviceBlockCompressor for &C {
+    fn name(&self) -> &'static str {
+        (**self).name()
+    }
+
+    fn device_ordinal(&self) -> i32 {
+        (**self).device_ordinal()
+    }
+
+    fn compress_batch_device(
+        &self,
+        data: &DeviceBuffer,
+        bounds: &[usize],
+        out: &mut crate::CompressedBatch,
+    ) -> Result<()> {
+        (**self).compress_batch_device(data, bounds, out)
+    }
 }
 
 /// A shared reference to a codec is itself a codec.

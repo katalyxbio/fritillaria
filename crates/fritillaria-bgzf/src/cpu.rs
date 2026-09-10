@@ -185,11 +185,15 @@ impl BlockCompressor for CpuCompressor {
             reason,
         };
 
-        if bounds.first() != Some(&0) || bounds.last() != Some(&data.len()) {
+        // `bounds` names ranges and need not cover `data` — see the
+        // `BlockCompressor` docs. What is checked is what could read past the
+        // end.
+        let Some(&last) = bounds.last() else {
+            return Err(malformed("bounds must have at least one entry".to_string()));
+        };
+        if last > data.len() {
             return Err(malformed(format!(
-                "bounds {:?}..{:?} do not describe {} bytes",
-                bounds.first(),
-                bounds.last(),
+                "bounds reach byte {last} of {} bytes",
                 data.len()
             )));
         }
@@ -480,13 +484,13 @@ mod tests {
     }
 
     #[test]
-    fn rejects_bounds_that_do_not_describe_the_data() {
+    fn rejects_bounds_that_would_read_past_the_data() {
         let data = b"abcdef";
         let cases: &[(&str, &[usize])] = &[
-            ("missing leading zero", &[1, 6]),
-            ("does not end at data.len()", &[0, 4]),
+            ("reaches past the end", &[0, 7]),
+            ("starts past the end", &[9, 9]),
             ("not monotonic", &[0, 6, 2, 6]),
-            ("no sentinel", &[]),
+            ("no entries at all", &[]),
         ];
 
         for (why, bounds) in cases {
@@ -495,10 +499,29 @@ mod tests {
                 CpuCompressor::new()
                     .compress_batch(data, bounds, &mut out)
                     .is_err(),
-                "{why}: bounds that do not describe the buffer must not silently \
-                 compress part of it"
+                "{why}: must not be allowed to read outside the buffer"
             );
         }
+
+        // A sub-range is *legal*, and deliberately so: it is what lets a writer
+        // compress a large file a window at a time out of one buffer that
+        // cannot be sub-sliced. The cost — that "I passed the wrong bounds and
+        // silently compressed part of my data" is no longer caught here — is
+        // recorded in the `BlockCompressor` docs.
+        let mut out = CompressedBatch::new();
+        CpuCompressor::new()
+            .compress_batch(data, &[2, 4], &mut out)
+            .expect("a window of the buffer must compress");
+        assert_eq!(out.len(), 1);
+
+        let mut stream = out.data().to_vec();
+        stream.extend_from_slice(&EOF_BLOCK);
+        let spans = discover_blocks(&stream, 0).unwrap();
+        let mut inflated = InflateBatch::new();
+        CpuCodec::new()
+            .inflate_batch(&stream, &spans, &mut inflated)
+            .unwrap();
+        assert_eq!(inflated.block(0), Some(&b"cd"[..]));
     }
 
     #[test]

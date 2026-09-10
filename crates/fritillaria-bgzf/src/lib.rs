@@ -24,13 +24,15 @@
 //!
 //! [`io`], [`gzi`], [`r#async`] and [`virtual_position`] are vendored from
 //! `noodles-bgzf` (MIT, © 2018 Michael Macias). [`block`], [`discover`],
-//! [`cpu`], [`read`], [`device_read`] and [`write`] are ours. See `VENDORED.md`.
+//! [`cpu`], [`read`], [`device_read`], [`device_write`] and [`write`] are
+//! ours. See `VENDORED.md`.
 
 // --- ours -------------------------------------------------------------------
 
 pub mod block;
 pub mod cpu;
 pub mod device_read;
+pub mod device_write;
 pub mod discover;
 #[cfg(any(test, feature = "testing"))]
 pub mod host_device;
@@ -40,9 +42,10 @@ pub mod write;
 pub use block::{BlockHeader, EOF_BLOCK, is_eof_block};
 pub use cpu::{CpuCodec, CpuCompressor};
 pub use device_read::{DeviceBatch, DeviceBgzfReader};
+pub use device_write::{DEFAULT_CHUNKS_PER_BATCH, DeviceBgzfWriter};
 pub use discover::{BlockDiscovery, discover_blocks};
 #[cfg(any(test, feature = "testing"))]
-pub use host_device::HostDeviceCodec;
+pub use host_device::{HostDeviceCodec, HostDeviceCompressor};
 pub use read::{BgzfReader, DEFAULT_BLOCKS_PER_BATCH};
 pub use write::{
     BgzfWriter, DEFAULT_PAYLOAD_SIZE, MAX_DEFLATE_STREAM, STORED_BLOCK_HEADER, frame_block,

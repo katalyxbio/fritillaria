@@ -272,22 +272,38 @@ impl CompressedBatch {
 /// algorithm legitimately change the output. The equivalence that is required is
 /// weaker and stated as a round trip — inflating a backend's output must
 /// reproduce the input exactly, block for block.
+///
+/// # `bounds` names ranges, and need not cover the buffer
+///
+/// This is the one place the compression seam deliberately differs from
+/// [`InflateBatch::offsets`](crate::InflateBatch::offsets), which always spans
+/// its whole buffer. A compressor is allowed to be pointed at part of one, and
+/// **a writer batching a large file depends on it**: compression scratch caps a
+/// batch at a few thousand blocks, so a file is compressed a window at a time
+/// out of one buffer that may hold far more. On the device that buffer cannot be
+/// sub-sliced without naming a backend, so the range has to travel in `bounds`.
+///
+/// The cost is that "I passed the wrong bounds and silently compressed half my
+/// data" is no longer catchable here. What is still checked is the part that
+/// could read past an allocation: `bounds` must be non-decreasing and its last
+/// entry within the buffer.
 pub trait BlockCompressor {
     /// Human-readable backend name, for diagnostics and benchmark labels.
     fn name(&self) -> &'static str;
 
-    /// Compresses each chunk of `data` delimited by `bounds` into one block.
+    /// Compresses each range `bounds[i]..bounds[i + 1]` of `data` into one block.
     ///
-    /// `bounds` has length `n + 1`, starts at 0 and ends at `data.len()` — the
-    /// same shape [`InflateBatch::offsets`](crate::InflateBatch::offsets)
-    /// produces, so a batch that was just inflated can be handed straight back.
+    /// `bounds` has length `n + 1` and is non-decreasing. Passing
+    /// [`InflateBatch::offsets`](crate::InflateBatch::offsets) compresses a
+    /// just-inflated batch back with its boundaries intact; passing a window of
+    /// it compresses part of one.
     ///
     /// `out` is cleared first; reuse it across calls to avoid reallocating.
     ///
     /// # Errors
     ///
-    /// If `bounds` does not describe `data`, or any chunk exceeds
-    /// [`MAX_COMPRESSIBLE_PAYLOAD`].
+    /// If `bounds` is empty, decreasing, or reaches past `data`, or if any chunk
+    /// exceeds [`MAX_COMPRESSIBLE_PAYLOAD`].
     fn compress_batch(
         &self,
         data: &[u8],

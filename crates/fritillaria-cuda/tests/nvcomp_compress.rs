@@ -33,7 +33,9 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use fritillaria_bgzf::{CpuCodec, CpuCompressor, EOF_BLOCK, discover_blocks, is_eof_block};
+use fritillaria_bgzf::{
+    CpuCodec, CpuCompressor, DeviceBgzfWriter, EOF_BLOCK, discover_blocks, is_eof_block,
+};
 use fritillaria_core::{
     BlockCodec, BlockCompressor, CompressedBatch, DeviceBlockCodec, DeviceBlockCompressor,
     DeviceInflateBatch, InflateBatch,
@@ -319,6 +321,66 @@ fn incompressible_input_still_yields_one_block_per_chunk() {
         );
     }
     assert_eq!(round_trip(&out).data(), data.as_slice());
+}
+
+/// The whole loop, on real hardware: read a BAM to device columns, write it
+/// straight back out, and hand the result to htslib.
+///
+/// Every other test here compresses one batch. This one drives
+/// `DeviceBgzfWriter` over a file at **one chunk per batch**, so the fixture's
+/// 13 blocks span 13 compression batches — the hardest split available, and the
+/// seam a realistic batch size would never reach. Nothing touches host memory
+/// between the inflate and the compress.
+#[test]
+fn a_file_round_trips_through_the_device_writer() {
+    let Some(c) = compressor() else { return };
+    let Ok(codec) = NvcompCodec::new() else {
+        return;
+    };
+
+    let raw = fixture("pacbio_hifi.bam");
+    let spans = discover_blocks(&raw, 0).unwrap();
+
+    let mut device = DeviceInflateBatch::new();
+    codec
+        .inflate_batch_device(&raw, &spans, &mut device)
+        .unwrap();
+
+    let mut w = DeviceBgzfWriter::new(Vec::new(), &c).with_chunks_per_batch(1);
+    w.write_batch(device.data().unwrap(), device.offsets())
+        .unwrap();
+    assert_eq!(
+        w.batches_run(),
+        device.len() as u64,
+        "one chunk per batch should mean one batch per block; without this the \
+         split being tested may not have happened at all"
+    );
+    let stream = w.finish().unwrap();
+
+    let inflated = inflate(&raw);
+    let back = {
+        let spans = discover_blocks(&stream, 0).unwrap();
+        let mut out = InflateBatch::new();
+        CpuCodec::new()
+            .inflate_batch(&stream, &spans, &mut out)
+            .unwrap();
+        out
+    };
+    assert_eq!(back.data(), inflated.data());
+    assert_eq!(
+        &back.offsets()[..inflated.offsets().len()],
+        inflated.offsets(),
+        "block boundaries moved across a batch split"
+    );
+
+    let dir = std::env::temp_dir().join("fritillaria-device-writer");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("roundtrip.bam");
+    std::fs::write(&path, &stream).unwrap();
+    if let Some(count) = samtools_count(&path) {
+        assert_eq!(count, 20, "the fixture holds 20 HiFi reads");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// The host and device compressors must agree on *content*, never on bytes.
