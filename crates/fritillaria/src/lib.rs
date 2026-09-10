@@ -56,6 +56,27 @@
 //! than quietly returning a CPU codec.
 //!
 //! `Auto` prefers nvCOMP, then our own CUDA kernel, then the CPU reference.
+//!
+//! # Reading and writing resolve `Auto` differently, on purpose
+//!
+//! Both paths exist and the choice is yours; what differs is which one you get
+//! when you do not choose.
+//!
+//! | | `Auto` picks | why |
+//! |---|---|---|
+//! | [`select_codec`] (read) | **GPU** | nvCOMP inflates 5.5x faster than our kernel and beats the host |
+//! | [`select_compressor`] (write) | **CPU** | nvCOMP compresses **3.3x slower** than `bgzip -c -@11` at comparable output |
+//!
+//! Measured, not assumed — `docs/compression.md` has the numbers and the phase
+//! breakdown showing 96% of the write-side cost is nvCOMP's own kernel. This
+//! library is built against the failure mode of *silently getting CPU speed
+//! when you expected acceleration*; on the write path that inverts into
+//! *silently getting something slower than the CPU*, and the same rule applies.
+//!
+//! **The GPU write path is still the right choice when the records are already
+//! in device memory**, because then the CPU alternative owes a device-to-host
+//! copy of the uncompressed data first. That case wants [`DeviceBgzfWriter`]
+//! with `NvcompCompressor` rather than [`select_compressor`].
 
 // Always present: the container, the codec seam, and the GPU backend are what
 // this crate is, not formats it re-exports.
@@ -116,7 +137,7 @@ pub use fritillaria_htsget as htsget;
 #[doc(inline)]
 pub use fritillaria_refget as refget;
 
-pub use fritillaria_bgzf::{CpuCodec, CpuCompressor, DeviceBgzfWriter};
+pub use fritillaria_bgzf::{BgzfWriter, CpuCodec, CpuCompressor, DeviceBgzfWriter};
 pub use fritillaria_core::{
     BlockCodec, BlockCompressor, BlockSpan, CompressedBatch, DeviceBlockCompressor, Error,
     InflateBatch, MAX_COMPRESSIBLE_PAYLOAD, Result, VirtualOffset,
@@ -233,9 +254,97 @@ pub fn select_codec(backend: Backend) -> Result<(Box<dyn BlockCodec>, Backend)> 
     }
 }
 
+/// Builds an nvCOMP compressor, or explains why it is unavailable.
+fn nvcomp_compressor() -> Result<Box<dyn BlockCompressor>> {
+    #[cfg(feature = "nvcomp")]
+    {
+        Ok(Box::new(fritillaria_cuda::NvcompCompressor::new(0)?))
+    }
+    #[cfg(not(feature = "nvcomp"))]
+    {
+        Err(Error::CudaUnavailable(
+            "built without the `nvcomp` feature".to_string(),
+        ))
+    }
+}
+
+/// Picks a **compressor**, returning it alongside the backend actually chosen.
+///
+/// # `Auto` picks the CPU here, and that is not an oversight
+///
+/// The mirror of [`select_codec`] in shape and **deliberately not in policy.**
+/// Reading, `Auto` prefers the GPU because nvCOMP inflates 5.5x faster than our
+/// kernel and comfortably beats the host. Writing, the same library measures
+/// **3.3x slower than `bgzip -c -@11`** at comparable output — 108 MiB/s against
+/// 355 on a 12-core host — and the breakdown says 96% of that is nvCOMP's own
+/// kernel, so it is not something this crate can fix. See
+/// `docs/compression.md`.
+///
+/// CLAUDE.md states the failure mode this library is designed against: *a user
+/// reaching for this expecting acceleration and silently getting CPU speed.*
+/// On the write path that inverts — a user could reach for the GPU and get
+/// something **slower than the CPU they came from** — and the same rule applies.
+/// So `Auto` resolves to [`Backend::Cpu`], and asking for the GPU is an explicit
+/// act.
+///
+/// # When the GPU path *is* the right choice
+///
+/// When the records are already in device memory. Then `bgzip` is not free
+/// either: it needs a device-to-host copy of the **uncompressed** data first,
+/// which is the transfer the compression ratio makes expensive. That case wants
+/// [`DeviceBgzfWriter`] with `NvcompCompressor`, not this function — this one
+/// hands back a host [`BlockCompressor`], and going through it from device
+/// memory would pay the very copy you were avoiding.
+///
+/// # Errors
+///
+/// [`Backend::Cuda`] is rejected outright: our own kernel inflates and does not
+/// compress, so there is no such thing as a CUDA compressor here. Returning the
+/// CPU for it would be exactly the silent substitution the docs above refuse.
+pub fn select_compressor(backend: Backend) -> Result<(Box<dyn BlockCompressor>, Backend)> {
+    match backend {
+        // Auto: see the note above. The GPU is not chosen for you on this path.
+        Backend::Cpu | Backend::Auto => Ok((Box::new(CpuCompressor::new()), Backend::Cpu)),
+        Backend::Nvcomp => Ok((nvcomp_compressor()?, Backend::Nvcomp)),
+        Backend::Cuda => Err(Error::CudaUnavailable(
+            "our CUDA kernel inflates but does not compress; use Backend::Nvcomp              for GPU compression, or Backend::Cpu"
+                .to_string(),
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The write path's `Auto` must not quietly hand back something slower than
+    /// the CPU the caller already had. Measured at 3.3x slower; see the docs.
+    #[test]
+    fn auto_compression_stays_on_the_cpu() {
+        let (compressor, backend) = select_compressor(Backend::Auto).unwrap();
+        assert_eq!(backend, Backend::Cpu);
+        assert_eq!(compressor.name(), "cpu-reference");
+    }
+
+    /// Asking for the GPU is explicit, and either works or says why.
+    #[test]
+    fn nvcomp_compression_is_opt_in() {
+        match select_compressor(Backend::Nvcomp) {
+            Ok((_, backend)) => assert_eq!(backend, Backend::Nvcomp),
+            Err(Error::CudaUnavailable(_)) => {}
+            Err(other) => panic!("unexpected error: {other}"),
+        }
+    }
+
+    /// Our kernel does not compress, and pretending otherwise by substituting
+    /// the CPU is the silent downgrade this crate refuses everywhere else.
+    #[test]
+    fn there_is_no_cuda_compressor() {
+        assert!(matches!(
+            select_compressor(Backend::Cuda),
+            Err(Error::CudaUnavailable(_))
+        ));
+    }
 
     #[test]
     fn auto_resolves_to_a_working_backend() {

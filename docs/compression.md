@@ -589,12 +589,36 @@ chunks across 41–650 batches on the real WGS file.
 **96% of it is nvCOMP's kernel and 4% is everything we wrote**, so there is no
 fix on our side. See above.
 
-What is genuinely open is a scope question rather than a measurement: whether to
-keep a GPU write path at all given it is 3.3x slower than `bgzip -@11` at
-comparable output. The case for keeping it is device residency and a single
-dependency for tools that are already on the GPU; the case against is that
-`bgzip` plus a D2H is simply faster today. Nothing in this document settles it,
-and it should be settled deliberately rather than by inertia.
+~~Whether to keep a GPU write path at all.~~ **Settled 2026-09-10 by the user:
+keep both, and let the caller choose** — the same reasoning that keeps a CPU
+implementation for every format. Neither path is removed and neither is
+privileged by default.
+
+What the decision required was making the choice *reachable and honest*, which
+it was not: the facade had `select_codec` for reading and nothing at all for
+writing. `select_compressor` now mirrors it, with one deliberate asymmetry.
+
+| | `Auto` picks | why |
+|---|---|---|
+| `select_codec` (read) | **GPU** | nvCOMP inflates 5.5x faster than our kernel and beats the host |
+| `select_compressor` (write) | **CPU** | nvCOMP compresses 3.3x slower than `bgzip -c -@11` at comparable output |
+
+CLAUDE.md names the failure mode this library is designed against: *a user
+reaching for this expecting acceleration and silently getting CPU speed.* On the
+write path that inverts — a user could reach for the GPU and get something
+**slower than the CPU they came from** — and the same rule applies, so `Auto`
+does not choose it for them. Asking for `Backend::Nvcomp` is an explicit act.
+
+`Backend::Cuda` is rejected outright rather than quietly served the CPU: our own
+kernel inflates and does not compress, and substituting is exactly the silent
+downgrade refused everywhere else.
+
+**And the GPU write path is still the right choice when the records are already
+in device memory**, which is the case it was built for. Then the CPU alternative
+is not free either — it owes a D2H of the *uncompressed* data first, the
+transfer the compression ratio makes expensive. That case wants
+`DeviceBgzfWriter` with `NvcompCompressor` directly, not `select_compressor`,
+which hands back a host compressor and would pay the very copy being avoided.
 
 ## The API, transcribed
 
