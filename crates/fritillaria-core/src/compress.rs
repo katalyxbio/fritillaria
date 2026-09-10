@@ -70,6 +70,15 @@ pub const MAX_COMPRESSIBLE_PAYLOAD: usize = MAX_DEFLATE_STREAM - STORED_BLOCK_HE
 /// [`MAX_BLOCK_SIZE`] — is what a compressor's output has to come in under.
 pub const MAX_DEFLATE_STREAM: usize = MAX_BLOCK_SIZE - BGZF_HEADER_SIZE - BGZF_TRAILER_SIZE;
 
+/// The canonical DEFLATE encoding of no bytes: one empty fixed-Huffman block.
+///
+/// Load-bearing rather than an optimisation. htslib decides a BGZF file is
+/// complete by comparing its **last 28 bytes** against a fixed EOF marker, and
+/// those two bytes are that marker's body. A compressor free to encode nothing
+/// however it liked would produce a valid empty block that htslib reports as
+/// truncation — so [`choose_framing`] pins it.
+pub const EMPTY_DEFLATE_STREAM: [u8; 2] = [0x03, 0x00];
+
 /// How one block's payload ends up encoded.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Framing {
@@ -77,6 +86,10 @@ pub enum Framing {
     Deflated,
     /// The payload is stored verbatim in a DEFLATE stored block.
     Stored,
+    /// The payload is empty, so the block is [`EMPTY_DEFLATE_STREAM`].
+    ///
+    /// Not a special case for tidiness — see that constant.
+    Empty,
 }
 
 /// Chooses between a compressor's output and storing the payload verbatim.
@@ -89,7 +102,10 @@ pub enum Framing {
 /// chances to disagree about where a block starts, which is the class of bug
 /// that produces a plausible-looking file rather than an error.
 ///
-/// Storing wins in two cases and only the first is about correctness:
+/// An empty payload always yields [`Framing::Empty`], whatever the compressor
+/// produced — that is what makes a re-framed empty block byte-identical to the
+/// EOF marker every tool checks for. Otherwise, storing wins in two cases and
+/// only the first is about correctness:
 ///
 /// - the deflate stream is too large to frame within BGZF's 64 KiB block cap,
 ///   which is reachable — nvCOMP's worst case is 2.26x the chunk;
@@ -97,6 +113,9 @@ pub enum Framing {
 ///   which is a ratio loss for nothing.
 #[must_use]
 pub fn choose_framing(payload_len: usize, deflate_len: usize) -> Framing {
+    if payload_len == 0 {
+        return Framing::Empty;
+    }
     // Compared against the stream limit rather than summing up to the block cap
     // on purpose: nvCOMP reports sizes this code does not choose, and a sum
     // would be an overflow rather than a rejection for an absurd one.
@@ -116,6 +135,7 @@ pub fn framed_size(payload_len: usize, deflate_len: usize) -> usize {
     let body = match choose_framing(payload_len, deflate_len) {
         Framing::Deflated => deflate_len,
         Framing::Stored => payload_len + STORED_BLOCK_HEADER,
+        Framing::Empty => EMPTY_DEFLATE_STREAM.len(),
     };
     BGZF_HEADER_SIZE + body + BGZF_TRAILER_SIZE
 }
@@ -370,10 +390,17 @@ mod tests {
         );
     }
 
+    /// The EOF marker is this case, and htslib compares its 28 bytes exactly.
+    ///
+    /// So the encoding of nothing cannot be left to whichever compressor is in
+    /// play: miniz happens to emit these two bytes and nvCOMP was never asked.
+    /// Whatever a compressor claims it produced for an empty payload is
+    /// discarded.
     #[test]
-    fn an_empty_payload_still_deflates() {
-        // The EOF marker is this case, and it must stay 28 bytes.
-        assert_eq!(choose_framing(0, 2), Framing::Deflated);
-        assert_eq!(framed_size(0, 2), 28);
+    fn an_empty_payload_is_always_the_canonical_empty_block() {
+        for claimed in [0usize, 2, 5, 999, 148_256] {
+            assert_eq!(choose_framing(0, claimed), Framing::Empty);
+            assert_eq!(framed_size(0, claimed), 28);
+        }
     }
 }

@@ -13,7 +13,7 @@
 //! for the *round trip* and the floor for the *ratio*, not a byte reference —
 //! see [`BlockCompressor`].
 
-use fritillaria_core::compress::{Framing, choose_framing};
+use fritillaria_core::compress::{EMPTY_DEFLATE_STREAM, Framing, choose_framing};
 use fritillaria_core::{
     BlockCodec, BlockCompressor, BlockSpan, CompressedBatch, Error, InflateBatch, MAX_BLOCK_SIZE,
     MAX_COMPRESSIBLE_PAYLOAD, Result,
@@ -163,6 +163,7 @@ impl CpuCompressor {
                 store_block(payload, &mut stored);
                 frame_block(out, &stored, crc, isize)
             }
+            Framing::Empty => frame_block(out, &EMPTY_DEFLATE_STREAM, crc, isize),
         }
     }
 }

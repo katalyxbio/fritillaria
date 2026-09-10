@@ -138,11 +138,19 @@ sizing entry points are host-side. Per 64 KiB chunk:
 
 Three things here were not guessable, and all three shape the implementation.
 
-**Scratch is 17x the payload at our chosen default.** It is exactly linear in the
-chunk count (verified to 16,384 chunks; the lower rungs deviate by a few parts
-per million, which is bounded rather than modelled), so a batch sizer can divide
-a VRAM budget by a constant. But the constant is large: compressing 64 KiB costs
-over a megabyte of scratch.
+**Scratch is 17x the payload at our chosen default.** Multiplying the one-chunk
+cost is an upper bound on what `n` chunks need (verified to 16,384 chunks), so a
+batch sizer can divide a VRAM budget by a constant and be safe. But the constant
+is large: compressing 64 KiB costs over a megabyte of scratch.
+
+**The exact constant is device-dependent, and the table above is this machine's.**
+Found on 2026-09-10, by a test that asserted exact linearity — true with no CUDA
+driver, false on an L4, which reports **1,114,440** per chunk against this
+machine's 1,114,184 and wants 1,536 bytes *less* than 7x that for 7 chunks. So
+the sizing entry point does consult the device when there is one. The numbers
+here remain the right order of magnitude and the right argument; they are not
+values to hardcode, and `CompressBudget` queries the real device at construction
+rather than using them.
 
 **So compression batches must be far smaller than decompression batches.** The
 read path put 166,012 blocks in one batch. At 1.33 MB per block, a 16 GiB T4

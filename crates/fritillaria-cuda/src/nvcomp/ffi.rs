@@ -920,18 +920,31 @@ mod tests {
         assert_eq!(none, 0);
     }
 
-    /// Scratch is exactly linear in the chunk count.
+    /// Scratch grows no faster than linearly in the chunk count.
     ///
     /// This is what makes a compression batch sizeable at all, and it is the
-    /// property a batch sizer divides by: scratch per chunk is a constant, so
-    /// "how many blocks fit in the VRAM budget" has an answer. If the cost were
-    /// superlinear there would be no safe batch size.
+    /// property a batch sizer divides by: multiply the one-chunk cost and you
+    /// get an upper bound on what `n` chunks need, so "how many blocks fit in
+    /// the VRAM budget" has a safe answer. Superlinear growth would leave no
+    /// safe batch size at all.
     ///
-    /// Measured at **1,114,184 bytes per 64 KiB chunk** at our default — 17x the
-    /// chunk itself, and the dominant term in the memory budget. Growth in the
-    /// chunk *size* is close to linear but carries a small per-chunk constant
-    /// that does not fit one model across the whole ladder, so only the
-    /// direction is asserted there. BGZF chunks are 64 KiB anyway.
+    /// About **1.11 MB per 64 KiB chunk** at our default — 17x the chunk itself,
+    /// and the dominant term in the memory budget.
+    ///
+    /// # The exact value is device-dependent, and this test learned that the
+    /// # expensive way
+    ///
+    /// An earlier version asserted scratch was *exactly* `n * per_chunk` at the
+    /// upper rungs, because that is what nvCOMP reports on a machine with no
+    /// CUDA driver — where all of this was developed. On a real L4 it reports
+    /// **1,114,440** per chunk against this machine's **1,114,184**, and 7 chunks
+    /// want 1,536 bytes *less* than 7x that. So the entry point does consult the
+    /// device when there is one, and an equality here was pinning an
+    /// environment rather than a contract.
+    ///
+    /// The consequence beyond this test: any per-chunk figure written down in
+    /// `docs/compression.md` is *this machine's*, and a batch sizer must query
+    /// the target device rather than use it. [`super::CompressBudget`] does.
     #[test]
     fn compression_scratch_is_linear_in_the_chunk_count() {
         if std::env::var_os(LIB_PATH_ENV).is_none() {
@@ -958,28 +971,27 @@ mod tests {
                 let measured = temp(chunks, MAX_COMPRESS_CHUNK_BYTES);
                 let modelled = per_chunk * chunks;
 
-                // Exact at `HighRatio` and `MaxRatio`. The lower rungs deviate
-                // by a few parts per million — measured 8 KiB in 369 MB at
-                // `LowRatio` — which is neither a fixed overhead nor a clean
-                // per-chunk constant, so it is bounded relatively rather than
-                // modelled. A sizer that divides a budget by the per-chunk cost
-                // and rounds down is unaffected either way; what would break it
-                // is superlinear growth, and that is what this rules out.
-                let slack = modelled.abs_diff(measured);
+                // The property a batch sizer actually needs: multiplying the
+                // one-chunk cost must never *under*-estimate, or a batch sized
+                // from it would not fit. Asserted as a bound rather than an
+                // equality on purpose — see the note above about the same test
+                // failing on a real device after passing without one.
                 assert!(
-                    slack * 1000 <= modelled,
-                    "scratch is not linear in the chunk count at {algorithm:?}: \
+                    measured <= modelled,
+                    "scratch grows faster than per-chunk at {algorithm:?}: \
                      {chunks} chunks measured {measured}, modelled {modelled}"
                 );
-                if matches!(
-                    algorithm,
-                    DeflateAlgorithm::HighRatio | DeflateAlgorithm::MaxRatio
-                ) {
-                    assert_eq!(
-                        measured, modelled,
-                        "scratch should be exactly linear at {algorithm:?}"
-                    );
-                }
+                // And it must not over-estimate wildly either, or the sizer
+                // leaves most of the card idle. Measured deviations: 8 KiB in
+                // 369 MB at `LowRatio` with no device, 1536 bytes in 7.8 MB at
+                // `HighRatio` on an L4 — both far inside this.
+                let slack = modelled - measured;
+                assert!(
+                    slack * 1000 <= modelled,
+                    "scratch is not near-linear in the chunk count at \
+                     {algorithm:?}: {chunks} chunks measured {measured}, \
+                     modelled {modelled}"
+                );
             }
 
             // Smaller chunks must want less scratch, or sizing a batch by the

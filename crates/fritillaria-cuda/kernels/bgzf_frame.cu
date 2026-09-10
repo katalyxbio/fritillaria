@@ -16,7 +16,7 @@
 // thread each — they are not worth splitting, and having one thread own each
 // gives the `BC` computation exactly one place to be wrong.
 //
-// The host decides `stored[i]`, it is not recomputed here. That is not caution:
+// The host decides `framing[i]`, it is not recomputed here. That is not caution:
 // the host has to size the output buffer *before* this kernel runs, so it has
 // already made the choice, and deriving it a second time would be a second
 // chance to disagree about where a block starts. See
@@ -26,6 +26,11 @@
 #define BGZF_HEADER_SIZE 18
 #define BGZF_TRAILER_SIZE 8
 
+// Framing codes, matching `fritillaria_core::compress::Framing`.
+#define FRAMING_DEFLATED 0
+#define FRAMING_STORED 1
+#define FRAMING_EMPTY 2
+
 extern "C" __global__ void frame_blocks(
     const unsigned char *deflate,            // nvCOMP output, in padded slots
     const unsigned long long *slot_offsets,  // each chunk's slot in `deflate`
@@ -34,7 +39,7 @@ extern "C" __global__ void frame_blocks(
     const unsigned long long *raw_offsets,   // each chunk's start in `raw`
     const unsigned int *raw_sizes,           // each chunk's uncompressed length
     const unsigned int *crcs,                // CRC32 of each uncompressed chunk
-    const unsigned char *stored,             // 1 = store verbatim, 0 = use deflate
+    const unsigned char *framing,            // FRAMING_* per block, chosen by the host
     unsigned char *out,                      // the dense BGZF stream
     const unsigned long long *out_offsets,   // where each block starts in `out`
     int num_blocks)
@@ -46,14 +51,20 @@ extern "C" __global__ void frame_blocks(
 
     unsigned char *block = out + out_offsets[i];
     unsigned int raw_len = raw_sizes[i];
-    bool store = stored[i] != 0;
+    unsigned char how = framing[i];
 
     // Body length decides the BC field, so it has to be known before the
     // header is written. A stored block is its payload plus five bytes of
     // DEFLATE framing; that fixed overhead is the whole reason storing is a
     // usable fallback.
-    unsigned long long body_len = store ? (unsigned long long)raw_len + 5
-                                        : deflate_sizes[i];
+    unsigned long long body_len;
+    if (how == FRAMING_STORED) {
+        body_len = (unsigned long long)raw_len + 5;
+    } else if (how == FRAMING_EMPTY) {
+        body_len = 2;
+    } else {
+        body_len = deflate_sizes[i];
+    }
     unsigned long long block_size = BGZF_HEADER_SIZE + body_len + BGZF_TRAILER_SIZE;
 
     if (threadIdx.x == 0) {
@@ -83,7 +94,16 @@ extern "C" __global__ void frame_blocks(
 
     unsigned char *body = block + BGZF_HEADER_SIZE;
 
-    if (store) {
+    if (how == FRAMING_EMPTY) {
+        // The canonical DEFLATE encoding of no bytes: one empty fixed-Huffman
+        // block. Not whatever the compressor happened to emit — htslib decides
+        // a BGZF file is complete by comparing its last 28 bytes against a
+        // fixed EOF marker, and these two are that marker's body.
+        if (threadIdx.x == 0) {
+            body[0] = 0x03;
+            body[1] = 0x00;
+        }
+    } else if (how == FRAMING_STORED) {
         if (threadIdx.x == 0) {
             // BFINAL = 1, BTYPE = 00. Stored blocks are byte-aligned and this
             // is the first byte, so no bit padding is needed.

@@ -131,6 +131,19 @@ impl SlotPlan {
     }
 }
 
+/// [`Framing`] as the byte the kernel switches on.
+///
+/// The codes are duplicated as `FRAMING_*` in `kernels/bgzf_frame.cu`, which is
+/// unavoidable across the language boundary. Keeping the conversion in one
+/// function at least means there is a single place to check them against it.
+const fn framing_code(framing: Framing) -> u8 {
+    match framing {
+        Framing::Deflated => 0,
+        Framing::Stored => 1,
+        Framing::Empty => 2,
+    }
+}
+
 /// The dense BGZF layout, decided once nvCOMP has reported its sizes.
 ///
 /// This is the one place the host has to make a decision the kernel cannot: the
@@ -140,8 +153,8 @@ impl SlotPlan {
 /// cannot drift on it.
 #[derive(Clone, Debug)]
 pub struct FramePlan {
-    /// 1 where the payload is stored verbatim rather than deflated.
-    pub stored: Vec<u8>,
+    /// The `Framing` each block uses, as the code the kernel switches on.
+    pub framing: Vec<u8>,
     /// Where each block starts in the dense output; length `n + 1`.
     pub offsets: Vec<u64>,
     /// Total dense bytes.
@@ -168,7 +181,7 @@ impl FramePlan {
         }
 
         let mut plan = Self {
-            stored: Vec::with_capacity(payload_lens.len()),
+            framing: Vec::with_capacity(payload_lens.len()),
             offsets: Vec::with_capacity(payload_lens.len() + 1),
             total: 0,
             stored_count: 0,
@@ -188,9 +201,9 @@ impl FramePlan {
                 Error::Cuda(format!("nvcomp reported {deflated} bytes for chunk {i}"))
             })?;
 
-            let stored = choose_framing(raw, deflated) == Framing::Stored;
-            plan.stored.push(u8::from(stored));
-            plan.stored_count += usize::from(stored);
+            let framing = choose_framing(raw, deflated);
+            plan.framing.push(framing_code(framing));
+            plan.stored_count += usize::from(framing == Framing::Stored);
             plan.offsets.push(cursor);
             cursor += fritillaria_core::compress::framed_size(raw, deflated) as u64;
         }
@@ -432,7 +445,7 @@ impl NvcompCompressor {
 
     /// Gathers the padded slots into a dense BGZF stream.
     fn launch_frame(&self, inputs: &FrameInputs<'_>, plan: &FramePlan) -> Result<CudaSlice<u8>> {
-        let count = plan.stored.len();
+        let count = plan.framing.len();
         let up =
             |v: &[u64], what: &'static str| self.stream.clone_htod(v).map_err(driver_err(what));
 
@@ -444,9 +457,9 @@ impl NvcompCompressor {
             .stream
             .clone_htod(inputs.raw_sizes)
             .map_err(driver_err("uploading chunk lengths"))?;
-        let stored = self
+        let framing = self
             .stream
-            .clone_htod(&plan.stored)
+            .clone_htod(&plan.framing)
             .map_err(driver_err("uploading framing decisions"))?;
         let mut dense = self
             .stream
@@ -470,7 +483,7 @@ impl NvcompCompressor {
             .arg(&raw_offsets)
             .arg(&raw_sizes)
             .arg(inputs.crcs)
-            .arg(&stored)
+            .arg(&framing)
             .arg(&mut dense)
             .arg(&out_offsets)
             .arg(&count_arg);
@@ -795,16 +808,16 @@ mod tests {
         let plan = FramePlan::new(&[100, 200], &[40, 50]).unwrap();
         assert_eq!(plan.offsets, [0, 66, 142]);
         assert_eq!(plan.total, 142);
-        assert_eq!(plan.stored, [0, 0]);
+        assert_eq!(plan.framing, [0, 0]);
         assert_eq!(plan.stored_count, 0);
     }
 
-    /// The reachable case, and the reason the kernel takes a `stored` flag at
+    /// The reachable case, and the reason the kernel takes a framing code at
     /// all: nvCOMP's worst case is 2.26x a full chunk, well past the block cap.
     #[test]
     fn an_oversized_chunk_is_planned_as_a_stored_block() {
         let plan = FramePlan::new(&[65_280], &[148_256]).unwrap();
-        assert_eq!(plan.stored, [1]);
+        assert_eq!(plan.framing, [1]);
         assert_eq!(plan.stored_count, 1);
         assert_eq!(plan.total, 18 + 65_280 + 5 + 8);
         assert!(plan.total <= fritillaria_core::MAX_BLOCK_SIZE);
@@ -819,8 +832,8 @@ mod tests {
                 let plan = FramePlan::new(&[raw], &[deflated]).unwrap();
                 let expected = choose_framing(raw as usize, deflated as usize);
                 assert_eq!(
-                    plan.stored[0] == 1,
-                    expected == Framing::Stored,
+                    plan.framing[0],
+                    framing_code(expected),
                     "raw {raw}, deflated {deflated}"
                 );
                 assert_eq!(
@@ -828,6 +841,18 @@ mod tests {
                     fritillaria_core::compress::framed_size(raw as usize, deflated as usize)
                 );
             }
+        }
+    }
+
+    /// An empty chunk must plan as the canonical 28-byte EOF marker, whatever
+    /// nvCOMP claims it produced for it — htslib compares those bytes exactly,
+    /// so a file ending in any other valid empty block reads as truncated.
+    #[test]
+    fn an_empty_chunk_is_planned_as_the_eof_marker() {
+        for claimed in [0u64, 2, 5, 148_256] {
+            let plan = FramePlan::new(&[0], &[claimed]).unwrap();
+            assert_eq!(plan.framing, [framing_code(Framing::Empty)]);
+            assert_eq!(plan.total, 28);
         }
     }
 

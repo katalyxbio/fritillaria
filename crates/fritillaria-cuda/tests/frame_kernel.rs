@@ -26,7 +26,22 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use fritillaria_bgzf::{STORED_BLOCK_HEADER, frame_block, store_block};
-use fritillaria_core::compress::{BGZF_HEADER_SIZE, BGZF_TRAILER_SIZE, Framing, choose_framing};
+use fritillaria_core::compress::{
+    BGZF_HEADER_SIZE, BGZF_TRAILER_SIZE, EMPTY_DEFLATE_STREAM, Framing, choose_framing,
+};
+
+/// `Framing` as the byte the kernel switches on.
+///
+/// Deliberately written out here rather than imported from `nvcomp::compress`:
+/// that module's copy is one side of the thing under test, and a test that
+/// asked it for the codes would be checking it agrees with itself.
+fn framing_code(framing: Framing) -> u64 {
+    match framing {
+        Framing::Deflated => 0,
+        Framing::Stored => 1,
+        Framing::Empty => 2,
+    }
+}
 
 /// One chunk's worth of what the kernel is handed.
 struct Chunk {
@@ -108,15 +123,16 @@ fn run_kernel(h: &Harness, chunks: &[Chunk], block_dim: u64) -> Vec<u8> {
     }
 
     let mut out_offsets = Vec::new();
-    let mut stored = Vec::new();
+    let mut framings = Vec::new();
     let mut cursor = 0u64;
     for chunk in chunks {
         out_offsets.push(cursor);
         let framing = choose_framing(chunk.payload.len(), chunk.deflate.len());
-        stored.push(u64::from(framing == Framing::Stored));
+        framings.push(framing_code(framing));
         let body = match framing {
             Framing::Deflated => chunk.deflate.len(),
             Framing::Stored => chunk.payload.len() + STORED_BLOCK_HEADER,
+            Framing::Empty => EMPTY_DEFLATE_STREAM.len(),
         };
         cursor += (BGZF_HEADER_SIZE + body + BGZF_TRAILER_SIZE) as u64;
     }
@@ -135,7 +151,7 @@ fn run_kernel(h: &Harness, chunks: &[Chunk], block_dim: u64) -> Vec<u8> {
             .iter()
             .map(|c| u64::from(crc32fast::hash(&c.payload))),
     );
-    push_u64s(&mut input, stored);
+    push_u64s(&mut input, framings);
     push_u64s(&mut input, [deflate_blob.len() as u64]);
     input.extend_from_slice(&deflate_blob);
     push_u64s(&mut input, [raw_blob.len() as u64]);
@@ -167,6 +183,9 @@ fn reference(chunks: &[Chunk]) -> Vec<u8> {
                 let mut stored = Vec::new();
                 store_block(&chunk.payload, &mut stored);
                 frame_block(&mut out, &stored, crc, isize).unwrap();
+            }
+            Framing::Empty => {
+                frame_block(&mut out, &EMPTY_DEFLATE_STREAM, crc, isize).unwrap();
             }
         }
     }
@@ -257,6 +276,41 @@ fn an_over_cap_deflate_stream_is_stored_instead() {
     let mut got = Vec::new();
     std::io::Read::read_to_end(&mut reader, &mut got).unwrap();
     assert_eq!(got, payload);
+}
+
+/// An empty chunk must come out as the canonical 28-byte EOF marker, whatever
+/// the compressor claimed it produced for it.
+///
+/// This is the one place the kernel is *not* allowed to use nvCOMP's output.
+/// htslib decides a BGZF file is complete by comparing its last 28 bytes against
+/// a fixed marker, so a file ending in any other perfectly valid empty block
+/// reads as truncated. Until this existed the property held only by luck —
+/// miniz happens to emit those two bytes, and nvCOMP had never been asked.
+#[test]
+fn an_empty_chunk_frames_as_the_canonical_eof_marker() {
+    let h = build_harness("empty").expect("no C++ compiler");
+
+    for claimed in [
+        Vec::new(),
+        vec![0x03, 0x00],
+        vec![0xde; 40],
+        vec![0u8; 148_256],
+    ] {
+        let chunks = vec![Chunk {
+            payload: Vec::new(),
+            deflate: claimed.clone(),
+        }];
+        let framed = run_kernel(&h, &chunks, 256);
+
+        assert_eq!(
+            framed,
+            fritillaria_bgzf::EOF_BLOCK,
+            "an empty chunk whose compressor returned {} bytes did not frame as \
+             the EOF marker; every tool would call the file truncated",
+            claimed.len()
+        );
+        assert_eq!(framed, reference(&chunks));
+    }
 }
 
 /// The kernel divides the body copy across `blockDim.x` threads, so a stride bug
