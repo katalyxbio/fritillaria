@@ -213,7 +213,7 @@ def main():
 
         # Release profile: a debug-build inflate benchmark measures nothing.
         run(f"cargo build --release --features {features} -p fritillaria-cuda "
-            "--example bench_inflate --example bench_decode")
+            "--example bench_inflate --example bench_decode --example bench_compress")
 
         print("\n" + "=" * 68, flush=True)
         print("FRITILLARIA (GPU) — decompression only", flush=True)
@@ -230,6 +230,20 @@ def main():
         print("=" * 68, flush=True)
         run(f"cargo run --release --quiet --features {features} -p fritillaria-cuda "
             f"--example bench_decode -- {BAM_PATH}")
+
+        # The write path, which had no throughput number at all until this ran.
+        # Kept separate from the read benchmarks for the same reason they are
+        # separate from each other: they answer different questions, and this
+        # project's recurring mistake is quoting one as the other.
+        if features == "nvcomp":
+            print("\n" + "=" * 68, flush=True)
+            print("FRITILLARIA (GPU) — COMPRESSION from device memory", flush=True)
+            print("=" * 68, flush=True)
+            run(f"cargo run --release --quiet --features {features} -p fritillaria-cuda "
+                f"--example bench_compress -- {BAM_PATH}")
+        else:
+            print("\n[bench] NVCOMP=0 — no compression benchmark (our kernel "
+                  "does not compress)", flush=True)
 
     print("\n" + "=" * 68, flush=True)
     print("HTSLIB BASELINE (bgzip -d: same workload, same file, same machine)", flush=True)
@@ -265,6 +279,43 @@ def main():
             print(f"  wall {elapsed:.2f}s   "
                   f"{size / elapsed / 1024**2:.0f} MiB/s of compressed input",
                   flush=True)
+
+        # The compression baseline, on the *decompressed* bytes, so it is the
+        # same workload bench_compress measures. Written to /dev/null for the
+        # same reason: disk speed is not the subject.
+        #
+        # NOT comparable head-to-head with bench_compress, and the report says
+        # so: bgzip starts from host bytes and this project's writer starts from
+        # device bytes, and a GPU producer choosing bgzip pays a D2H of the
+        # uncompressed data first. Printed adjacent because the *ratio* is
+        # directly comparable even when the wall clock is not.
+        print("\n-- bgzip -c (compression baseline) --", flush=True)
+        plain = "/content/plain.bin"
+        if subprocess.run(
+            f"bgzip -d -@ {threads} -c {BAM_PATH} > {plain}", shell=True
+        ).returncode != 0:
+            print("  FAILED to stage the uncompressed input", flush=True)
+        else:
+            raw_size = os.path.getsize(plain)
+            for n in dict.fromkeys([1, max(1, threads - 1)]):
+                started = _time.monotonic()
+                code = subprocess.run(
+                    f"bgzip -c -@ {n} {plain} > /content/out.gz", shell=True
+                ).returncode
+                elapsed = _time.monotonic() - started
+                if code != 0:
+                    print(f"  -@ {n}: FAILED (exit {code})", flush=True)
+                    continue
+                out_size = os.path.getsize("/content/out.gz")
+                print(
+                    f"  -@ {n:<2} wall {elapsed:.2f}s   "
+                    f"{raw_size / elapsed / 1024**2:.0f} MiB/s of input   "
+                    f"ratio {raw_size / out_size:.2f}x",
+                    flush=True,
+                )
+            os.remove(plain)
+            if os.path.exists("/content/out.gz"):
+                os.remove("/content/out.gz")
 
     print("\n[bench] OK", flush=True)
 
