@@ -553,7 +553,7 @@ impl NvcompCompressor {
         &self,
         inputs: &FrameInputs<'_>,
         plan: &FramePlan,
-        timings: &mut CompressTimings,
+        timings: &mut Option<&mut CompressTimings>,
     ) -> Result<CudaSlice<u8>> {
         let upload_started = std::time::Instant::now();
         let count = plan.framing.len();
@@ -577,10 +577,12 @@ impl NvcompCompressor {
             .alloc_zeros::<u8>(plan.total.max(1))
             .map_err(driver_err("allocating dense output"))?;
 
-        self.stream
-            .synchronize()
-            .map_err(driver_err("synchronising after framing upload"))?;
-        timings.frame_upload += upload_started.elapsed();
+        if let Some(t) = timings.as_mut() {
+            self.stream
+                .synchronize()
+                .map_err(driver_err("synchronising after framing upload"))?;
+            t.frame_upload += upload_started.elapsed();
+        }
 
         let count_arg = i32::try_from(count)
             .map_err(|_| Error::Cuda(format!("batch of {count} chunks exceeds i32")))?;
@@ -755,7 +757,7 @@ impl DeviceBlockCompressor for NvcompCompressor {
         bounds: &[usize],
         out: &mut CompressedBatch,
     ) -> Result<()> {
-        self.compress_batch_device_timed(data, bounds, out, &mut CompressTimings::default())
+        self.run(data, bounds, out, None)
     }
 }
 
@@ -773,19 +775,50 @@ impl NvcompCompressor {
         out: &mut CompressedBatch,
         timings: &mut CompressTimings,
     ) -> Result<()> {
-        // Every phase ends with a synchronise, or the "kernel" phases would
-        // measure launch latency and the phase after them would absorb the real
-        // work. That is the same discipline `InflateTimings` uses and the reason
-        // the sum is an upper bound.
+        self.run(data, bounds, out, Some(timings))
+    }
+
+    /// The one implementation, instrumented only when asked.
+    ///
+    /// **The measurement must not be the default path.** An earlier version had
+    /// `compress_batch_device` delegate to the timed one with a throwaway
+    /// `CompressTimings`, which meant every caller paid a stream synchronise
+    /// after every phase of every batch — attribution machinery imposed on code
+    /// that never asked to be attributed. Instrumentation that changes the thing
+    /// it measures is worse than none.
+    // Long, and deliberately one function: it is a linear pipeline whose stages
+    // share a dozen live buffers, and the phase clock has to run *between*
+    // stages. Splitting it to satisfy the lint would mean either threading those
+    // buffers through helper signatures or moving the clock, and the second is
+    // how instrumentation starts measuring something other than the code.
+    #[allow(clippy::too_many_lines)]
+    fn run(
+        &self,
+        data: &DeviceBuffer,
+        bounds: &[usize],
+        out: &mut CompressedBatch,
+        mut timings: Option<&mut CompressTimings>,
+    ) -> Result<()> {
+        // Only when attributing: the "kernel" phases would otherwise measure
+        // launch latency and the phase after them would absorb the real work.
+        // That is the same discipline `InflateTimings` uses, and the reason the
+        // sum is an upper bound rather than a wall clock.
+        let timed = timings.is_some();
         let sync = |what: &'static str| -> Result<()> {
-            self.stream.synchronize().map_err(driver_err(what))?;
+            if timed {
+                self.stream.synchronize().map_err(driver_err(what))?;
+            }
             Ok(())
         };
         let mut clock = std::time::Instant::now();
-        let mut lap = |slot: &mut std::time::Duration| {
-            *slot += clock.elapsed();
-            clock = std::time::Instant::now();
-        };
+        let mut lap =
+            |timings: &mut Option<&mut CompressTimings>,
+             pick: fn(&mut CompressTimings) -> &mut std::time::Duration| {
+                if let Some(t) = timings.as_deref_mut() {
+                    *pick(t) += clock.elapsed();
+                    clock = std::time::Instant::now();
+                }
+            };
 
         out.clear();
         if bounds.len() < 2 {
@@ -806,7 +839,7 @@ impl NvcompCompressor {
         // --- lay out the padded slots and upload the descriptor arrays -------
 
         let slots = SlotPlan::new(count, &self.budget);
-        lap(&mut timings.plan);
+        lap(&mut timings, |t| &mut t.plan);
 
         let mut staged = self.stage(input, &slots, &chunk_offsets, &chunk_lengths)?;
         let Staged {
@@ -822,11 +855,15 @@ impl NvcompCompressor {
         // slot pointer cannot be uploaded before its buffer exists — so they are
         // measured together and reported under `upload`. Splitting them would
         // mean reordering the code to suit the clock.
-        lap(&mut timings.upload);
+        lap(&mut timings, |t| &mut t.upload);
 
         self.launch_compress(
             count,
-            data.byte_len(),
+            // The *batch's* uncompressed total, not the whole buffer's. Measured
+            // to make no difference to what nvCOMP returns — temp is driven by
+            // the chunk count alone — but passing 10 GiB to describe a 16 MiB
+            // batch is a lie that a future version could start believing.
+            bounds[bounds.len() - 1] - bounds[0],
             d_in_ptrs,
             d_in_bytes,
             d_out_ptrs,
@@ -834,11 +871,11 @@ impl NvcompCompressor {
             status,
         )?;
         sync("synchronising after compression")?;
-        lap(&mut timings.compress);
+        lap(&mut timings, |t| &mut t.compress);
 
         let (crcs, crc_status) = self.checksum(d_in_ptrs, d_in_bytes, count)?;
         sync("synchronising after checksum")?;
-        lap(&mut timings.crc32);
+        lap(&mut timings, |t| &mut t.crc32);
 
         // --- the one mid-batch synchronise, and why it is unavoidable -------
         //
@@ -859,7 +896,7 @@ impl NvcompCompressor {
             .clone_dtoh(&crc_status)
             .map_err(driver_err("downloading checksum statuses"))?;
 
-        lap(&mut timings.sizes);
+        lap(&mut timings, |t| &mut t.sizes);
 
         self.check_statuses(&status, "compress")?;
         // A block whose payload went unchecksummed would be written with a
@@ -870,7 +907,7 @@ impl NvcompCompressor {
         // --- frame into a dense BGZF stream and bring it back ---------------
 
         let plan = FramePlan::new(&chunk_lengths, &produced)?;
-        lap(&mut timings.frame_plan);
+        lap(&mut timings, |t| &mut t.frame_plan);
 
         let dense = self.launch_frame(
             &FrameInputs {
@@ -883,22 +920,24 @@ impl NvcompCompressor {
                 crcs: &crcs,
             },
             &plan,
-            timings,
+            &mut timings,
         )?;
         sync("synchronising after framing")?;
-        lap(&mut timings.frame);
+        lap(&mut timings, |t| &mut t.frame);
 
         let mut bytes = self
             .stream
             .clone_dtoh(&dense)
             .map_err(driver_err("downloading compressed stream"))?;
         bytes.truncate(plan.total);
-        lap(&mut timings.download);
+        lap(&mut timings, |t| &mut t.download);
 
-        timings.batches += 1;
-        timings.blocks += count as u64;
-        timings.uncompressed_bytes += (bounds[bounds.len() - 1] - bounds[0]) as u64;
-        timings.compressed_bytes += plan.total as u64;
+        if let Some(t) = timings.as_mut() {
+            t.batches += 1;
+            t.blocks += count as u64;
+            t.uncompressed_bytes += (bounds[bounds.len() - 1] - bounds[0]) as u64;
+            t.compressed_bytes += plan.total as u64;
+        }
 
         let (buf, offsets) = out.parts_mut();
         *buf = bytes;
