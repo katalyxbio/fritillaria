@@ -265,15 +265,25 @@ mod bench {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     use fritillaria_cuda::NvcompCompressor;
 
+    /// Chunks per batch for the two bounded stages.
+    ///
+    /// Fixed rather than taken from the sweep's winner, because the sweep now
+    /// runs *after* them. 4096 won it on both previous runs and the difference
+    /// from 1024 was under 1%.
+    const DEFAULT_CHUNKS: usize = 4096;
+
     let mut args = std::env::args().skip(1);
     let Some(path) = args.next() else {
         eprintln!("usage: bench_compress <file.bam> [chunks_per_batch ...]");
         std::process::exit(2);
     };
+    // 256 is dropped from the default sweep: it was the slowest row and told us
+    // nothing 1024 did not, and the full-file sweep is the one stage here with
+    // no bound on it.
     let sweep: Vec<usize> = {
         let given: Vec<usize> = args.filter_map(|a| a.parse().ok()).collect();
         if given.is_empty() {
-            vec![256, 1024, 4096]
+            vec![1024, 4096]
         } else {
             given
         }
@@ -292,20 +302,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         bench::max_chunk(),
     );
 
+    // --- ordering, and it is deliberate ------------------------------------
+    //
+    // Bounded stages first, the unbounded one last. The full-file sweep is the
+    // only stage here whose cost is not capped, and a previous run stalled in it
+    // for 34 minutes and was killed — taking the phase breakdown, which ran
+    // afterwards, with it. The diagnostic never fired at the thing that was
+    // broken.
+    //
+    // That is the third time on this benchmark that an expensive stage has eaten
+    // the stages behind it. Put the cheap, load-bearing ones in front.
     let compressor = NvcompCompressor::new(0)?;
+
+    bench::report_phases(data, &bounds, DEFAULT_CHUNKS)?;
+    bench::report_ladder(data, &bounds, DEFAULT_CHUNKS)?;
+
     let mut passes = Vec::new();
     for chunks in &sweep {
         passes.push((*chunks, bench::run(data, &bounds, &compressor, *chunks)?));
     }
     bench::report(uncompressed, &passes);
-
-    let best = sweep
-        .iter()
-        .zip(&passes)
-        .min_by_key(|(_, (_, p))| p.wall)
-        .map_or(1024, |(c, _)| *c);
-    bench::report_ladder(data, &bounds, best)?;
-    bench::report_phases(data, &bounds, best)?;
 
     Ok(())
 }
