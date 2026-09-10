@@ -47,7 +47,7 @@
 pub mod compress;
 pub mod ffi;
 
-pub use compress::{CompressBudget, FramePlan, NvcompCompressor, SlotPlan};
+pub use compress::{CompressBudget, CompressTimings, FramePlan, NvcompCompressor, SlotPlan};
 
 use std::ffi::c_void;
 use std::sync::Arc;

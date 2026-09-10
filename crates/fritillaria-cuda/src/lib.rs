@@ -54,7 +54,7 @@ pub use fastq::FastqScanner;
 pub use text::TextScanner;
 
 #[cfg(feature = "nvcomp")]
-pub use nvcomp::{CompressBudget, NvcompCodec, NvcompCompressor, NvcompContext};
+pub use nvcomp::{CompressBudget, CompressTimings, NvcompCodec, NvcompCompressor, NvcompContext};
 
 /// The cudarc this crate links, re-exported.
 ///

@@ -317,6 +317,49 @@ fn every_rung_reports_its_ratio_against_htslib() {
     }
 }
 
+/// Instrumenting the path must not change what it produces.
+///
+/// `compress_batch_device_timed` synchronises between phases, which is a real
+/// change to how the work is scheduled. If that altered a single byte, every
+/// number the phase breakdown reports would be describing a different program
+/// from the one that ships.
+#[test]
+fn timing_the_path_does_not_change_its_output() {
+    let Some(c) = compressor() else { return };
+    let Ok(codec) = NvcompCodec::new() else {
+        return;
+    };
+
+    // A real device allocation: the compressor downcasts to this backend's own,
+    // so a host stand-in would not reach the code under test.
+    let raw = fixture("pacbio_hifi.bam");
+    let spans = discover_blocks(&raw, 0).unwrap();
+    let mut device = DeviceInflateBatch::new();
+    codec
+        .inflate_batch_device(&raw, &spans, &mut device)
+        .unwrap();
+    let data = device.data().unwrap();
+
+    let mut untimed = CompressedBatch::new();
+    c.compress_batch_device(data, device.offsets(), &mut untimed)
+        .unwrap();
+
+    let mut timed = CompressedBatch::new();
+    let mut timings = fritillaria_cuda::CompressTimings::default();
+    c.compress_batch_device_timed(data, device.offsets(), &mut timed, &mut timings)
+        .unwrap();
+
+    assert_eq!(timed.data(), untimed.data());
+    assert_eq!(timed.offsets(), untimed.offsets());
+    assert_eq!(timings.batches, 1);
+    assert_eq!(timings.blocks as usize, device.len());
+    assert!(
+        timings.total() > std::time::Duration::ZERO,
+        "the phase clock recorded nothing, so the breakdown would be a table of \
+         zeroes rather than a measurement"
+    );
+}
+
 /// Incompressible input is where the stored fallback and the block cap meet.
 ///
 /// nvCOMP's worst case is 2.26x a full chunk, so this is the case that would

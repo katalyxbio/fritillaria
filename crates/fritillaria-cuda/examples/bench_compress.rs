@@ -55,7 +55,7 @@ mod bench {
         MAX_COMPRESSIBLE_PAYLOAD,
     };
     use fritillaria_cuda::nvcomp::ffi::DeflateAlgorithm;
-    use fritillaria_cuda::{NvcompCodec, NvcompCompressor};
+    use fritillaria_cuda::{CompressTimings, NvcompCodec, NvcompCompressor};
 
     /// What one pass produced and how long it took.
     pub(crate) struct Pass {
@@ -206,6 +206,59 @@ mod bench {
     pub(crate) fn max_chunk() -> usize {
         MAX_COMPRESSIBLE_PAYLOAD
     }
+
+    /// Where the time goes, over the same prefix the ladder uses.
+    ///
+    /// The question this answers: `bgzip -c -@11` does 355 MiB/s and this path
+    /// does 108 at the shipping rung. Until something attributed that, "the GPU
+    /// is slower" was an observation and not a diagnosis.
+    ///
+    /// Synchronised between phases, so the sum exceeds the untimed wall clock
+    /// above. Read it for *shares*, not for throughput.
+    pub(crate) fn report_phases(
+        data: &DeviceBuffer,
+        bounds: &[usize],
+        chunks_per_batch: usize,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let cut = bounds
+            .iter()
+            .position(|&b| b - bounds[0] >= LADDER_BYTES)
+            .map_or(bounds.len(), |i| i + 1);
+        let bounds = &bounds[..cut];
+
+        let compressor = NvcompCompressor::new(0)?;
+        let mut timings = CompressTimings::default();
+        let mut out = fritillaria_core::CompressedBatch::new();
+
+        let mut start = 0;
+        while start + 1 < bounds.len() {
+            let end = (start + chunks_per_batch + 1).min(bounds.len());
+            compressor.compress_batch_device_timed(
+                data,
+                &bounds[start..end],
+                &mut out,
+                &mut timings,
+            )?;
+            start = end - 1;
+        }
+
+        let total = timings.total().as_secs_f64().max(f64::MIN_POSITIVE);
+        println!(
+            "\n-- where the time goes ({} batches, {} blocks; synchronised, so \
+             the sum exceeds wall clock) --\n",
+            timings.batches, timings.blocks
+        );
+        println!("  {:<22}  {:>10}  {:>8}", "phase", "time", "share");
+        for (name, d) in timings.phases() {
+            println!(
+                "  {name:<22}  {:>9.3}s  {:>7.1}%",
+                d.as_secs_f64(),
+                d.as_secs_f64() / total * 100.0
+            );
+        }
+        println!("  {:<22}  {:>9.3}s", "sum", total);
+        Ok(())
+    }
 }
 
 #[cfg(feature = "nvcomp")]
@@ -252,6 +305,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .min_by_key(|(_, (_, p))| p.wall)
         .map_or(1024, |(c, _)| *c);
     bench::report_ladder(data, &bounds, best)?;
+    bench::report_phases(data, &bounds, best)?;
 
     Ok(())
 }

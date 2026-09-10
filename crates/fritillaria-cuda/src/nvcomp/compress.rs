@@ -105,6 +105,102 @@ impl CompressBudget {
     }
 }
 
+/// Per-phase wall clock for one `compress_batch_device`.
+///
+/// The write-side counterpart of [`InflateTimings`](crate::InflateTimings), and
+/// it exists to answer a specific question: `bgzip -c -@11` compresses at
+/// 355 MiB/s on a 12-core host and this path manages 108 at the shipping rung.
+/// **Nothing attributed that gap**, so "the GPU is slower at compression" was an
+/// observation rather than a diagnosis. These phases are the diagnosis.
+///
+/// Phases are separated by stream synchronisation so each can be attributed
+/// individually. That **removes the overlap a pipelined implementation would
+/// get**, so [`total`](Self::total) is an upper bound on wall clock rather than
+/// a measurement of it. Use it to see where time goes, never to quote
+/// throughput — the untimed path is what `bench_compress` reports for that.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CompressTimings {
+    /// Host-side: bounds checks, chunk extents, slot layout.
+    pub plan: std::time::Duration,
+    /// Device allocation: slot buffer, sizes, statuses, checksums, scratch.
+    pub alloc: std::time::Duration,
+    /// Host-to-device copy of the pointer and size arrays.
+    pub upload: std::time::Duration,
+    /// `nvcompBatchedDeflateCompressAsync`.
+    pub compress: std::time::Duration,
+    /// `nvcompBatchedCRC32Async` over the *uncompressed* chunks.
+    pub crc32: std::time::Duration,
+    /// The one mid-batch synchronise: `8 * n` bytes of sizes, plus statuses.
+    pub sizes: std::time::Duration,
+    /// Host-side: the dense BGZF layout, once the sizes are known.
+    pub frame_plan: std::time::Duration,
+    /// Host-to-device copy of the framing descriptor arrays.
+    pub frame_upload: std::time::Duration,
+    /// `frame_blocks` — the gather out of the padded slots.
+    pub frame: std::time::Duration,
+    /// Device-to-host copy of the finished BGZF stream.
+    pub download: std::time::Duration,
+
+    pub batches: u64,
+    pub blocks: u64,
+    pub uncompressed_bytes: u64,
+    pub compressed_bytes: u64,
+}
+
+impl CompressTimings {
+    /// Folds another batch's timings into this one.
+    pub fn accumulate(&mut self, other: &Self) {
+        self.plan += other.plan;
+        self.alloc += other.alloc;
+        self.upload += other.upload;
+        self.compress += other.compress;
+        self.crc32 += other.crc32;
+        self.sizes += other.sizes;
+        self.frame_plan += other.frame_plan;
+        self.frame_upload += other.frame_upload;
+        self.frame += other.frame;
+        self.download += other.download;
+        self.batches += other.batches;
+        self.blocks += other.blocks;
+        self.uncompressed_bytes += other.uncompressed_bytes;
+        self.compressed_bytes += other.compressed_bytes;
+    }
+
+    /// Sum of the measured phases — an upper bound, not a wall clock.
+    #[must_use]
+    pub fn total(&self) -> std::time::Duration {
+        self.plan
+            + self.alloc
+            + self.upload
+            + self.compress
+            + self.crc32
+            + self.sizes
+            + self.frame_plan
+            + self.frame_upload
+            + self.frame
+            + self.download
+    }
+
+    /// Every phase with its name, longest first — what a report prints.
+    #[must_use]
+    pub fn phases(&self) -> Vec<(&'static str, std::time::Duration)> {
+        let mut all = vec![
+            ("plan (host)", self.plan),
+            ("allocate", self.alloc),
+            ("upload descriptors", self.upload),
+            ("compress kernel", self.compress),
+            ("crc32 kernel", self.crc32),
+            ("download sizes", self.sizes),
+            ("frame plan (host)", self.frame_plan),
+            ("upload framing", self.frame_upload),
+            ("frame kernel", self.frame),
+            ("download stream", self.download),
+        ];
+        all.sort_by_key(|&(_, d)| std::cmp::Reverse(d));
+        all
+    }
+}
+
 /// Where each chunk's compressed output goes in the padded slot buffer.
 ///
 /// Trivial arithmetic, split out because it is the half of the layout that is
@@ -453,7 +549,13 @@ impl NvcompCompressor {
     }
 
     /// Gathers the padded slots into a dense BGZF stream.
-    fn launch_frame(&self, inputs: &FrameInputs<'_>, plan: &FramePlan) -> Result<CudaSlice<u8>> {
+    fn launch_frame(
+        &self,
+        inputs: &FrameInputs<'_>,
+        plan: &FramePlan,
+        timings: &mut CompressTimings,
+    ) -> Result<CudaSlice<u8>> {
+        let upload_started = std::time::Instant::now();
         let count = plan.framing.len();
         let up =
             |v: &[u64], what: &'static str| self.stream.clone_htod(v).map_err(driver_err(what));
@@ -474,6 +576,11 @@ impl NvcompCompressor {
             .stream
             .alloc_zeros::<u8>(plan.total.max(1))
             .map_err(driver_err("allocating dense output"))?;
+
+        self.stream
+            .synchronize()
+            .map_err(driver_err("synchronising after framing upload"))?;
+        timings.frame_upload += upload_started.elapsed();
 
         let count_arg = i32::try_from(count)
             .map_err(|_| Error::Cuda(format!("batch of {count} chunks exceeds i32")))?;
@@ -565,6 +672,74 @@ impl NvcompCompressor {
     }
 }
 
+/// Device buffers one compression launch reads and writes.
+///
+/// Grouped because allocation and upload are interleaved here and cannot be
+/// separated: a slot *pointer* cannot be uploaded before the buffer it points
+/// into exists. Splitting them for the sake of the phase clock would mean
+/// reordering the code to suit the measurement.
+struct Staged {
+    slot_buffer: CudaSlice<u8>,
+    d_in_ptrs: CudaSlice<u64>,
+    d_out_ptrs: CudaSlice<u64>,
+    d_in_bytes: CudaSlice<u64>,
+    produced: CudaSlice<u64>,
+    status: CudaSlice<i32>,
+}
+
+impl NvcompCompressor {
+    /// Allocates the slot buffer and uploads everything nvCOMP indexes by.
+    fn stage(
+        &self,
+        input: &CudaSlice<u8>,
+        slots: &SlotPlan,
+        chunk_offsets: &[u64],
+        chunk_lengths: &[u32],
+    ) -> Result<Staged> {
+        let count = chunk_lengths.len();
+        let mut slot_buffer = self
+            .stream
+            .alloc_zeros::<u8>(slots.total.max(1))
+            .map_err(driver_err("allocating compressed slots"))?;
+
+        // nvCOMP takes arrays of pointers rather than a base plus offsets, so
+        // this is where the plan's offsets meet real device addresses.
+        let in_ptrs: Vec<u64> = {
+            let (base, _g) = input.device_ptr(&self.stream);
+            chunk_offsets.iter().map(|off| base + off).collect()
+        };
+        let out_ptrs: Vec<u64> = {
+            let (base, _g) = slot_buffer.device_ptr_mut(&self.stream);
+            slots.offsets.iter().map(|off| base + off).collect()
+        };
+        let in_bytes: Vec<u64> = chunk_lengths.iter().map(|&n| u64::from(n)).collect();
+
+        Ok(Staged {
+            d_in_ptrs: self
+                .stream
+                .clone_htod(&in_ptrs)
+                .map_err(driver_err("uploading input chunk pointers"))?,
+            d_out_ptrs: self
+                .stream
+                .clone_htod(&out_ptrs)
+                .map_err(driver_err("uploading output chunk pointers"))?,
+            d_in_bytes: self
+                .stream
+                .clone_htod(&in_bytes)
+                .map_err(driver_err("uploading chunk sizes"))?,
+            produced: self
+                .stream
+                .alloc_zeros::<u64>(count)
+                .map_err(driver_err("allocating produced sizes"))?,
+            status: self
+                .stream
+                .alloc_zeros::<i32>(count)
+                .map_err(driver_err("allocating compression statuses"))?,
+            slot_buffer,
+        })
+    }
+}
+
 impl DeviceBlockCompressor for NvcompCompressor {
     fn name(&self) -> &'static str {
         "nvcomp-compress"
@@ -580,6 +755,38 @@ impl DeviceBlockCompressor for NvcompCompressor {
         bounds: &[usize],
         out: &mut CompressedBatch,
     ) -> Result<()> {
+        self.compress_batch_device_timed(data, bounds, out, &mut CompressTimings::default())
+    }
+}
+
+impl NvcompCompressor {
+    /// [`compress_batch_device`](DeviceBlockCompressor::compress_batch_device),
+    /// recording where the time went.
+    ///
+    /// Synchronises between phases so each can be attributed, which makes this
+    /// **slower than the untimed path** and its total an upper bound. See
+    /// [`CompressTimings`].
+    pub fn compress_batch_device_timed(
+        &self,
+        data: &DeviceBuffer,
+        bounds: &[usize],
+        out: &mut CompressedBatch,
+        timings: &mut CompressTimings,
+    ) -> Result<()> {
+        // Every phase ends with a synchronise, or the "kernel" phases would
+        // measure launch latency and the phase after them would absorb the real
+        // work. That is the same discipline `InflateTimings` uses and the reason
+        // the sum is an upper bound.
+        let sync = |what: &'static str| -> Result<()> {
+            self.stream.synchronize().map_err(driver_err(what))?;
+            Ok(())
+        };
+        let mut clock = std::time::Instant::now();
+        let mut lap = |slot: &mut std::time::Duration| {
+            *slot += clock.elapsed();
+            clock = std::time::Instant::now();
+        };
+
         out.clear();
         if bounds.len() < 2 {
             return Ok(());
@@ -599,53 +806,39 @@ impl DeviceBlockCompressor for NvcompCompressor {
         // --- lay out the padded slots and upload the descriptor arrays -------
 
         let slots = SlotPlan::new(count, &self.budget);
-        let mut slot_buffer = self
-            .stream
-            .alloc_zeros::<u8>(slots.total.max(1))
-            .map_err(driver_err("allocating compressed slots"))?;
+        lap(&mut timings.plan);
 
-        let in_ptrs: Vec<u64> = {
-            let (base, _g) = input.device_ptr(&self.stream);
-            chunk_offsets.iter().map(|off| base + off).collect()
-        };
-        let out_ptrs: Vec<u64> = {
-            let (base, _g) = slot_buffer.device_ptr_mut(&self.stream);
-            slots.offsets.iter().map(|off| base + off).collect()
-        };
-        let in_bytes: Vec<u64> = chunk_lengths.iter().map(|&n| u64::from(n)).collect();
-
-        let d_in_ptrs = self
-            .stream
-            .clone_htod(&in_ptrs)
-            .map_err(driver_err("uploading input chunk pointers"))?;
-        let d_out_ptrs = self
-            .stream
-            .clone_htod(&out_ptrs)
-            .map_err(driver_err("uploading output chunk pointers"))?;
-        let d_in_bytes = self
-            .stream
-            .clone_htod(&in_bytes)
-            .map_err(driver_err("uploading chunk sizes"))?;
-        let mut produced = self
-            .stream
-            .alloc_zeros::<u64>(count)
-            .map_err(driver_err("allocating produced sizes"))?;
-        let mut status = self
-            .stream
-            .alloc_zeros::<i32>(count)
-            .map_err(driver_err("allocating compression statuses"))?;
+        let mut staged = self.stage(input, &slots, &chunk_offsets, &chunk_lengths)?;
+        let Staged {
+            ref mut slot_buffer,
+            ref d_in_ptrs,
+            ref d_out_ptrs,
+            ref d_in_bytes,
+            ref mut produced,
+            ref mut status,
+        } = staged;
+        sync("synchronising after upload")?;
+        // Allocation and upload are interleaved by the pointer arithmetic — a
+        // slot pointer cannot be uploaded before its buffer exists — so they are
+        // measured together and reported under `upload`. Splitting them would
+        // mean reordering the code to suit the clock.
+        lap(&mut timings.upload);
 
         self.launch_compress(
             count,
             data.byte_len(),
-            &d_in_ptrs,
-            &d_in_bytes,
-            &d_out_ptrs,
-            &mut produced,
-            &mut status,
+            d_in_ptrs,
+            d_in_bytes,
+            d_out_ptrs,
+            produced,
+            status,
         )?;
+        sync("synchronising after compression")?;
+        lap(&mut timings.compress);
 
-        let (crcs, crc_status) = self.checksum(&d_in_ptrs, &d_in_bytes, count)?;
+        let (crcs, crc_status) = self.checksum(d_in_ptrs, d_in_bytes, count)?;
+        sync("synchronising after checksum")?;
+        lap(&mut timings.crc32);
 
         // --- the one mid-batch synchronise, and why it is unavoidable -------
         //
@@ -655,16 +848,18 @@ impl DeviceBlockCompressor for NvcompCompressor {
 
         let produced = self
             .stream
-            .clone_dtoh(&produced)
+            .clone_dtoh(produced)
             .map_err(driver_err("downloading compressed sizes"))?;
         let status = self
             .stream
-            .clone_dtoh(&status)
+            .clone_dtoh(status)
             .map_err(driver_err("downloading compression statuses"))?;
         let crc_status = self
             .stream
             .clone_dtoh(&crc_status)
             .map_err(driver_err("downloading checksum statuses"))?;
+
+        lap(&mut timings.sizes);
 
         self.check_statuses(&status, "compress")?;
         // A block whose payload went unchecksummed would be written with a
@@ -675,9 +870,11 @@ impl DeviceBlockCompressor for NvcompCompressor {
         // --- frame into a dense BGZF stream and bring it back ---------------
 
         let plan = FramePlan::new(&chunk_lengths, &produced)?;
+        lap(&mut timings.frame_plan);
+
         let dense = self.launch_frame(
             &FrameInputs {
-                slots: &slot_buffer,
+                slots: slot_buffer,
                 slot_offsets: &slots.offsets,
                 deflate_sizes: &produced,
                 raw: input,
@@ -686,13 +883,22 @@ impl DeviceBlockCompressor for NvcompCompressor {
                 crcs: &crcs,
             },
             &plan,
+            timings,
         )?;
+        sync("synchronising after framing")?;
+        lap(&mut timings.frame);
 
         let mut bytes = self
             .stream
             .clone_dtoh(&dense)
             .map_err(driver_err("downloading compressed stream"))?;
         bytes.truncate(plan.total);
+        lap(&mut timings.download);
+
+        timings.batches += 1;
+        timings.blocks += count as u64;
+        timings.uncompressed_bytes += (bounds[bounds.len() - 1] - bounds[0]) as u64;
+        timings.compressed_bytes += plan.total as u64;
 
         let (buf, offsets) = out.parts_mut();
         *buf = bytes;
