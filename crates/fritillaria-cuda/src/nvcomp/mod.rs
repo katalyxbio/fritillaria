@@ -7,8 +7,8 @@
 //! Decompression Engine. Closing that gap ourselves is not a good use of
 //! effort, and NVIDIA's own library is what an adopter expects to see. So
 //! nvCOMP is the intended fast path and `kernels/inflate.cu` is the portable
-//! fallback and a second differential-test oracle. See CLAUDE.md,
-//! *Decisions made*.
+//! fallback and a second differential-test oracle. See the README,
+//! *Two GPU codecs, and why both*.
 //!
 //! # How it maps onto BGZF
 //!
@@ -44,7 +44,10 @@
 //!
 //! [`gather`]: https://docs.rs/fritillaria-cuda
 
+pub mod compress;
 pub mod ffi;
+
+pub use compress::{CompressBudget, CompressTimings, FramePlan, NvcompCompressor, SlotPlan};
 
 use std::ffi::c_void;
 use std::sync::Arc;
@@ -156,7 +159,7 @@ impl NvcompContext {
 
         let lib = Nvcomp::load()?;
         let opts = DeflateDecompressOpts::new(Backend::Default);
-        let alignments = lib.deflate_alignments(opts)?;
+        let alignments = lib.deflate_decompress_alignments(opts)?;
 
         if alignments.output > 1 {
             // Unreachable with 5.3, which reports 1. Refused rather than
@@ -334,7 +337,7 @@ impl NvcompContext {
         // assuming would be an out-of-bounds write if that ever changes.
         let temp_bytes =
             self.lib
-                .deflate_temp_size(count, MAX_BLOCK_SIZE, plan.total, self.opts)?;
+                .deflate_decompress_temp_size(count, MAX_BLOCK_SIZE, plan.total, self.opts)?;
 
         Ok(Uploaded {
             in_ptrs: self

@@ -19,7 +19,7 @@
 //! But if `FRITILLARIA_NVCOMP_LIB` is **set**, someone deliberately pointed us
 //! at a library, so failing to load it is a hard error rather than a skip —
 //! otherwise a broken remote bootstrap would report as a clean pass, which is
-//! the exact failure this project has already hit three times (see CLAUDE.md).
+//! the exact failure this project has already hit three times.
 
 #![cfg(feature = "nvcomp")]
 

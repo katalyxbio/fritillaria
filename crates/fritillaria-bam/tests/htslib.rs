@@ -15,7 +15,7 @@
 
 use std::path::PathBuf;
 
-use fritillaria_bam::{RecordBatch, header::parse_header, seq};
+use fritillaria_bam::columnar::{RecordBatch, header::parse_header, seq};
 use fritillaria_bgzf::{CpuCodec, discover_blocks};
 use fritillaria_core::{BlockCodec, InflateBatch};
 

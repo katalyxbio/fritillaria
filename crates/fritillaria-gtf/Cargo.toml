@@ -1,0 +1,26 @@
+[package]
+name = "fritillaria-gtf"
+version = "0.57.0"
+# Vendored unchanged from `noodles-gtf`; the authorship below is upstream's and
+# stays. See VENDORED.md.
+authors = ["Michael Macias <zaeleus@gmail.com>"]
+license = "MIT"
+edition.workspace = true
+rust-version.workspace = true
+description = "Gene Transfer Format (GTF) reader and writer"
+homepage = "https://github.com/katalyxbio/fritillaria"
+repository = "https://github.com/katalyxbio/fritillaria"
+documentation = "https://docs.rs/fritillaria-gtf"
+categories = ["parser-implementations", "science::bioinformatics"]
+
+[dependencies]
+bstr.workspace = true
+indexmap.workspace = true
+lexical-core.workspace = true
+fritillaria-bgzf = { path = "../fritillaria-bgzf", version = "0.51.0" }
+fritillaria-core = { path = "../fritillaria-core", version = "0.20.0" }
+fritillaria-csi = { path = "../fritillaria-csi", version = "0.61.0" }
+fritillaria-gff = { path = "../fritillaria-gff", version = "0.62.0" }
+
+[lints.rust]
+missing_docs = "warn"

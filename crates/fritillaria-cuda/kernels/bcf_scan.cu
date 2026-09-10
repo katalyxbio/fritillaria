@@ -418,4 +418,95 @@ __global__ void bcf_walk(const u8 *buf, u64 len, u64 start, u64 *out, u32 *count
     *tail = pos;
 }
 
+
+// Columnar site-core decode: one thread per record.
+//
+// The translation of `RecordBatch::decode` plus `Record::bounds` in the
+// reference, and diffed against it in `fritillaria-cuda/tests/bcf_decode.rs`.
+//
+// Boundaries are inherently sequential *within* a record — ID, each allele and
+// FILTER are typed values whose lengths live in their own descriptors, so where
+// INFO starts is only knowable after walking 2 + n_allele of them. Between
+// records there is no dependency at all, which is what makes this a thread per
+// record rather than a chain.
+//
+// Every walk is bounded by the record's own end rather than by the batch's, so
+// a malformed record cannot wander into its successor and produce bounds that
+// look reasonable. That mirrors the reference, where `Record::new` is handed a
+// slice of exactly one record.
+//
+// `errors` counts records whose typed-value walk failed. The host turns a
+// non-zero count into an error rather than shipping columns that are quietly
+// wrong for some rows -- a partial decode is the failure mode this whole
+// project treats as worse than being slow.
+extern "C" __global__ void bcf_decode(const u8 *buf, u64 len, const u64 *offsets, u32 n,
+                                      int *chromosome_id, int *position, int *reference_span,
+                                      u32 *quality, unsigned short *info_count,
+                                      unsigned short *allele_count, u32 *sample_count,
+                                      u8 *format_count, u32 *alleles_start, u32 *filters_start,
+                                      u32 *info_start, u32 *genotypes_start, u32 *record_end,
+                                      u32 *errors) {
+    u32 i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) {
+        return;
+    }
+
+    u64 pos = offsets[i];
+    if (pos + MIN_RECORD_SIZE > len) {
+        atomicAdd(errors, 1u);
+        return;
+    }
+
+    u64 l_shared = (u64)load_u32(buf + pos);
+    u64 l_indiv = (u64)load_u32(buf + pos + 4);
+    if (l_shared < SITE_CORE_SIZE) {
+        atomicAdd(errors, 1u);
+        return;
+    }
+    u64 end = pos + 8ull + l_shared + l_indiv;
+    if (end > len) {
+        atomicAdd(errors, 1u);
+        return;
+    }
+
+    // The fixed core: eight fields at known offsets, no walking required.
+    u32 n_allele = load_u16(buf + pos + 26);
+    chromosome_id[i] = (int)load_u32(buf + pos + 8);
+    position[i] = (int)load_u32(buf + pos + 12);
+    reference_span[i] = (int)load_u32(buf + pos + 16);
+    quality[i] = load_u32(buf + pos + 20);
+    info_count[i] = (unsigned short)load_u16(buf + pos + 24);
+    allele_count[i] = (unsigned short)n_allele;
+    sample_count[i] = load_u24(buf + pos + 28);
+    format_count[i] = buf[pos + 31];
+
+    // Both free -- the record's own length prefixes give them.
+    genotypes_start[i] = (u32)(8ull + l_shared);
+    record_end[i] = (u32)(end - pos);
+
+    // And now the part that costs: walk ID, then every allele, then FILTER.
+    u64 walk = skip_typed(buf, end, pos + 32ull); // past ID
+    if (walk == 0ull) {
+        atomicAdd(errors, 1u);
+        return;
+    }
+    alleles_start[i] = (u32)(walk - pos);
+
+    for (u32 a = 0u; a < n_allele; ++a) {
+        walk = skip_typed(buf, end, walk);
+        if (walk == 0ull) {
+            atomicAdd(errors, 1u);
+            return;
+        }
+    }
+    filters_start[i] = (u32)(walk - pos);
+
+    walk = skip_typed(buf, end, walk); // past FILTER
+    if (walk == 0ull) {
+        atomicAdd(errors, 1u);
+        return;
+    }
+    info_start[i] = (u32)(walk - pos);
+}
+
 } // extern "C"

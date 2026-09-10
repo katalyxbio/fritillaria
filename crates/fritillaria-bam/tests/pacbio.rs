@@ -24,7 +24,7 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use fritillaria_bam::{Array, Record, Value, header::parse_header, scan_records, seq};
+use fritillaria_bam::columnar::{Array, Record, Value, header::parse_header, scan_records, seq};
 use fritillaria_bgzf::{CpuCodec, discover_blocks};
 use fritillaria_core::{BlockCodec, InflateBatch};
 

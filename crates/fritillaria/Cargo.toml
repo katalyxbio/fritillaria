@@ -8,7 +8,42 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = []
+# Every file format, but not the two network clients: htsget and refget pull in
+# reqwest/hyper/rustls, and a TLS stack is not something a genomics I/O library
+# should impose on a caller who only wanted to read a BAM. Everything that
+# touches a *file* is on, so migrating from noodles gives nothing up by default.
+default = [
+    "bam",
+    "bcf",
+    "bed",
+    "cram",
+    "csi",
+    "fasta",
+    "fastq",
+    "gff",
+    "gtf",
+    "sam",
+    "tabix",
+    "util",
+    "vcf",
+]
+
+bam = ["dep:fritillaria-bam"]
+bcf = ["dep:fritillaria-bcf"]
+bed = ["dep:fritillaria-bed"]
+cram = ["dep:fritillaria-cram"]
+csi = ["dep:fritillaria-csi"]
+fasta = ["dep:fritillaria-fasta"]
+fastq = ["dep:fritillaria-fastq"]
+gff = ["dep:fritillaria-gff"]
+gtf = ["dep:fritillaria-gtf"]
+htsget = ["dep:fritillaria-htsget"]
+refget = ["dep:fritillaria-refget"]
+sam = ["dep:fritillaria-sam"]
+tabix = ["dep:fritillaria-tabix"]
+util = ["dep:fritillaria-util"]
+vcf = ["dep:fritillaria-vcf"]
+
 # Requires a CUDA driver at runtime. Off by default so the crate builds and
 # tests on machines with no GPU.
 cuda = ["fritillaria-cuda/cuda"]
@@ -18,10 +53,30 @@ cuda = ["fritillaria-cuda/cuda"]
 nvcomp = ["cuda", "fritillaria-cuda/nvcomp"]
 
 [dependencies]
+# Not optional: the container, the codec seam and backend selection are what
+# this crate *is*, not a format it happens to re-export.
 fritillaria-core.workspace = true
 fritillaria-bgzf.workspace = true
-fritillaria-bam.workspace = true
 fritillaria-cuda.workspace = true
+fritillaria-text.workspace = true
+
+# The format surface. The facade's whole job is that a caller migrating from
+# noodles finds every format where they expect it.
+fritillaria-bam = { workspace = true, optional = true }
+fritillaria-bcf = { workspace = true, optional = true }
+fritillaria-bed = { workspace = true, optional = true }
+fritillaria-cram = { workspace = true, optional = true }
+fritillaria-csi = { workspace = true, optional = true }
+fritillaria-fasta = { workspace = true, optional = true }
+fritillaria-fastq = { workspace = true, optional = true }
+fritillaria-gff = { workspace = true, optional = true }
+fritillaria-gtf = { workspace = true, optional = true }
+fritillaria-htsget = { workspace = true, optional = true }
+fritillaria-refget = { workspace = true, optional = true }
+fritillaria-sam = { workspace = true, optional = true }
+fritillaria-tabix = { workspace = true, optional = true }
+fritillaria-util = { workspace = true, optional = true }
+fritillaria-vcf = { workspace = true, optional = true }
 
 [lints]
 workspace = true

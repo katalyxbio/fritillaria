@@ -6,14 +6,14 @@
 //! 40,000 starts or what its position is.
 //!
 //! The algorithm and the reason it is sound are in
-//! [`fritillaria_bam::blocked`], which is the CPU reference these kernels are a
+//! [`fritillaria_bam::columnar::blocked`], which is the CPU reference these kernels are a
 //! translation of and the oracle they are diffed against.
 //! `kernels/bam_decode.cu` carries the same explanation next to the code.
 //!
 //! # Why this lives here rather than in `fritillaria-bam`
 //!
 //! Launching a kernel means naming a context, a stream and a pointer, and
-//! CLAUDE.md's rule is that those live in this crate and nowhere else. So the
+//! the workspace rule is that those live in this crate and nowhere else. So the
 //! dependency points this way: `fritillaria-cuda` knows about BAM, and
 //! `fritillaria-bam` stays free of any GPU crate, holding its columns as
 //! opaque [`DeviceBuffer`](fritillaria_core::DeviceBuffer)s.
@@ -24,12 +24,12 @@
 //! field boundaries index into the inflate batch, which must therefore outlive
 //! the record batch. Dropping the [`DeviceInflateBatch`] while a kernel is
 //! still reading columns off it frees the bytes underneath — silent corruption,
-//! not an error. See [`fritillaria_bam::device`] for why pointing at resident
+//! not an error. See [`fritillaria_bam::columnar::device`] for why pointing at resident
 //! bytes beats copying them.
 
 use std::time::Duration;
 
-use fritillaria_bam::device::DeviceRecordBatch;
+use fritillaria_bam::columnar::device::DeviceRecordBatch;
 use fritillaria_core::{DeviceInflateBatch, Result};
 // Only the stub path constructs an error here; with `cuda` on, every error
 // comes from `cuda_impl`.
@@ -154,7 +154,7 @@ impl BamDecoder {
     /// first batch of a file, and 0 for a continuation. The returned batch's
     /// [`tail`](DeviceRecordBatch::tail) is the offset of the first
     /// incompletely-buffered record, which the caller carries forward exactly
-    /// as with [`scan_records`](fritillaria_bam::scan_records).
+    /// as with [`scan_records`](fritillaria_bam::columnar::scan_records).
     ///
     /// The columns borrow `batch` in every sense but the type system's: it must
     /// outlive the result. See the module docs.
@@ -194,7 +194,7 @@ mod cuda_impl {
     use cudarc::driver::{
         CudaContext as RawContext, CudaFunction, CudaSlice, CudaStream, LaunchConfig, PushKernelArg,
     };
-    use fritillaria_bam::device::{DeviceColumns, DeviceRecordBatch};
+    use fritillaria_bam::columnar::device::{DeviceColumns, DeviceRecordBatch};
     use fritillaria_core::{DeviceAlloc, DeviceBuffer, DeviceInflateBatch, Error, Result};
 
     use super::{DecodeTimings, status_message};

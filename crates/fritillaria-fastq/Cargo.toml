@@ -1,0 +1,49 @@
+[package]
+name = "fritillaria-fastq"
+version = "0.23.0"
+# The authorship below is upstream's, and stays.
+authors = ["Michael Macias <zaeleus@gmail.com>"]
+# Mixed: `io`/`fai`/`fs`/`record`/`async` are vendored from noodles-fastq,
+# `columnar` is ours. See VENDORED.md.
+license = "Apache-2.0 AND MIT"
+edition.workspace = true
+rust-version.workspace = true
+description = "FASTQ: reader, writer, and device-resident columnar decoding."
+homepage = "https://github.com/katalyxbio/fritillaria"
+repository = "https://github.com/katalyxbio/fritillaria"
+documentation = "https://docs.rs/fritillaria-fastq"
+categories = ["parser-implementations", "science::bioinformatics"]
+
+[features]
+async = ["dep:futures", "dep:tokio"]
+
+[dependencies]
+fritillaria-core.workspace = true
+
+# Vendored path.
+bstr.workspace = true
+memchr.workspace = true
+
+futures = { workspace = true, optional = true, features = ["std"] }
+tokio = { workspace = true, optional = true, features = ["io-util"] }
+
+[dev-dependencies]
+fritillaria-core = { workspace = true, features = ["testing"] }
+# tests/columns.rs inflates the committed bgzipped fixtures. Dev-only: the
+# columnar path takes an already-inflated buffer and knows nothing of BGZF.
+fritillaria-bgzf = { workspace = true, features = ["testing"] }
+tokio = { workspace = true, features = ["fs", "io-std", "macros", "rt-multi-thread"] }
+
+[lints.rust]
+missing_docs = "warn"
+
+[package.metadata.docs.rs]
+features = ["async"]
+
+[[example]]
+name = "fastq_count_async"
+required-features = ["async"]
+
+[[example]]
+name = "fastq_write_async"
+required-features = ["async"]

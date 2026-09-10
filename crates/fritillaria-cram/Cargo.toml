@@ -1,0 +1,69 @@
+[package]
+name = "fritillaria-cram"
+version = "0.99.0"
+# Vendored unchanged from `noodles-cram`; the authorship below is upstream's and
+# stays. See VENDORED.md.
+authors = ["Michael Macias <zaeleus@gmail.com>"]
+license = "MIT"
+edition.workspace = true
+rust-version.workspace = true
+description = "CRAM format reader and writer"
+homepage = "https://github.com/katalyxbio/fritillaria"
+repository = "https://github.com/katalyxbio/fritillaria"
+documentation = "https://docs.rs/fritillaria-cram"
+categories = ["parser-implementations", "science::bioinformatics"]
+
+[features]
+async = ["dep:async-compression", "dep:futures", "dep:pin-project-lite", "dep:tokio"]
+libdeflate = ["dep:libdeflater"]
+
+[dependencies]
+bitflags.workspace = true
+bstr.workspace = true
+bzip2 = "0.6.0"
+flate2.workspace = true
+indexmap.workspace = true
+lexical-core.workspace = true
+lzma-rust2 = { version = "0.20.0", default-features = false, features = ["encoder", "std", "xz"] }
+md-5 = "0.11.0"
+fritillaria-bam = { path = "../fritillaria-bam", version = "0.95.0" }
+fritillaria-core = { path = "../fritillaria-core", version = "0.20.0" }
+fritillaria-fasta = { path = "../fritillaria-fasta", version = "0.66.0" }
+fritillaria-sam = { path = "../fritillaria-sam", version = "0.90.0" }
+
+async-compression = { version = "0.4.0", optional = true, features = ["gzip", "tokio"] }
+futures = { workspace = true, optional = true, features = ["std"] }
+pin-project-lite = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true, features = ["fs", "io-util"] }
+
+libdeflater = { workspace = true, optional = true }
+
+[dev-dependencies]
+fritillaria-sam = { path = "../fritillaria-sam", version = "0.90.0", features = ["async"] }
+tokio = { workspace = true, features = ["io-std", "macros", "rt-multi-thread"] }
+
+[lints.rust]
+missing_docs = "warn"
+
+[package.metadata.docs.rs]
+features = ["async"]
+
+[[example]]
+name = "cram_count_async"
+required-features = ["async"]
+
+[[example]]
+name = "cram_query_async"
+required-features = ["async"]
+
+[[example]]
+name = "cram_read_header_async"
+required-features = ["async"]
+
+[[example]]
+name = "cram_view_async"
+required-features = ["async"]
+
+[[example]]
+name = "cram_write_async"
+required-features = ["async"]

@@ -31,12 +31,16 @@
 // f64's mantissa is far more than a benchmark report needs.
 #![allow(clippy::cast_precision_loss)]
 
+#[cfg(feature = "cuda")]
 use std::time::Duration;
 
 fn mib(bytes: u64) -> f64 {
     bytes as f64 / (1024.0 * 1024.0)
 }
 
+// Only the `cuda` build reports throughput; without it this example is a stub
+// that prints why it did nothing.
+#[cfg(feature = "cuda")]
 fn rate(bytes: u64, elapsed: Duration) -> f64 {
     if elapsed.is_zero() {
         return f64::NAN;
@@ -49,7 +53,7 @@ mod bench {
     use super::{mib, rate};
     use std::time::{Duration, Instant};
 
-    use fritillaria_bam::header::parse_header;
+    use fritillaria_bam::columnar::header::parse_header;
     use fritillaria_bgzf::DeviceBgzfReader;
     use fritillaria_core::DeviceBlockCodec;
     use fritillaria_cuda::{BamDecoder, DecodeTimings};

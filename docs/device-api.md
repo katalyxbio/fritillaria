@@ -8,7 +8,8 @@ context and stream, exposing a completion event for cross-stream ordering; `Nvco
 implements the same two traits over NVIDIA's library, dlopened at runtime. **Verified on a Tesla
 T4**: 43 device tests, asserting byte-identity against the CPU reference, that output lands in
 the caller's own context, and that our kernel and nvCOMP agree with each other on a real htslib
-BAM. Steps 5-6 are still proposal.
+BAM. `DeviceBgzfReader` (step 5) and the columnar device decode (step 6) followed, each verified
+on a T4 in turn; the per-step notes below record what each one found.
 
 Two things changed while implementing, both recorded below: `DeviceInflateBatch::data()` returns
 `Option<&DeviceBuffer>` because an empty batch genuinely owns no allocation, and a backend fills
@@ -29,9 +30,11 @@ is why this needs designing rather than just writing:
    the whole workspace builds and tests on a machine with no toolkit.
 2. **Device memory and streams live in `fritillaria-cuda::backend` and nowhere else.** No raw
    pointer or device-tied lifetime may escape into `fritillaria-bam`, `-bcf`, `-bgzf`.
-3. **The noodles drop-in must keep working, unchanged.** It is the migration path. Existing
-   code doing `bam::io::Reader::from(BgzfReader::with_codec(f, codec))` must not break, and
-   must not be made worse to accommodate the columnar path.
+3. **The drop-in must keep working, unchanged.** It is the migration path. Existing code doing
+   `bam::io::Reader::from(BgzfReader::with_codec(f, codec))` must not break, and must not be
+   made worse to accommodate the columnar path. Since the vendoring this is stronger, not
+   weaker: `bam::io::Reader` *is* noodles' reader, byte-for-byte, so breaking it would mean
+   editing vendored code and forfeiting the rebase path in `VENDORED.md`.
 4. **Verification is mandatory.** CRC32 and `ISIZE` are checked in device mode too. Going
    device-resident must not become a way to silently skip verification.
 

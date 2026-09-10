@@ -14,6 +14,7 @@ import os
 import subprocess
 import sys
 import tarfile
+import time
 import urllib.request
 
 TOOLCHAIN = "1.94"
@@ -72,6 +73,10 @@ def report_device():
     run("nvidia-smi --query-gpu=name,driver_version,memory.total,compute_cap "
         "--format=csv,noheader", check=False)
     run("nvcc --version | tail -2", check=False)
+    # tests/frame_kernel.rs compiles bgzf_frame.cu as ordinary C++ to check its
+    # bytes without a GPU. It runs here too, and fails loudly with no compiler —
+    # so report one up front rather than have that look like a kernel bug.
+    run("c++ --version | head -1", check=False)
 
 
 def ensure_rust():
@@ -83,6 +88,35 @@ def ensure_rust():
         run("curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs "
             f"| sh -s -- -y --profile minimal --default-toolchain {TOOLCHAIN}")
     os.environ["PATH"] = os.path.expanduser("~/.cargo/bin") + ":" + os.environ["PATH"]
+
+
+def ensure_samtools():
+    """Installs samtools, so the write path's acceptance bar is actually checked.
+
+    Not on the Colab image. The compression tests treat it as a legitimately
+    absent capability and print `NOTE:` rather than failing, which is right —
+    but on a GPU VM that would mean the one binary question about our output
+    ("does htslib read it?") goes unanswered on the only run that produces
+    GPU-compressed bytes. So install it, and say plainly in the log whether it
+    is there: a `NOTE:` nobody notices is how a gap becomes permanent.
+    """
+    if subprocess.run("command -v samtools", shell=True).returncode == 0:
+        print("[job] samtools already present", flush=True)
+        return True
+
+    print("[job] installing samtools (absent from the Colab image)", flush=True)
+    run("apt-get install -y -qq samtools", check=False)
+
+    ok = subprocess.run("command -v samtools", shell=True).returncode == 0
+    if ok:
+        run("samtools --version | head -2", check=False)
+    else:
+        # Deliberately not fatal: the GPU work is what the VM is for, and the
+        # same bar is cleared locally for the host compressor. But it must be
+        # loud, because the tests themselves will only whisper.
+        print("[job] WARNING: samtools unavailable — htslib acceptance of the "
+              "GPU-compressed BAM went unchecked on this run", flush=True)
+    return ok
 
 
 def ensure_nvcomp():
@@ -145,6 +179,7 @@ def main():
     os.chdir(ROOT)
     report_device()
     ensure_rust()
+    ensure_samtools()
 
     # nvCOMP is the intended fast path, so the default run exercises it. Set
     # NVCOMP=0 when iterating on something else and the ~55 MB fetch is pure
@@ -158,7 +193,33 @@ def main():
 
     # Only the CUDA-gated crate. The CPU paths are already covered locally and
     # rebuilding the whole workspace here costs money for no extra signal.
-    output = run(f"cargo test -p fritillaria-cuda --features {features} -- --nocapture")
+    #
+    # The build is timed and reported separately because a fresh VM has no cargo
+    # registry cache and no target/, so this is a genuine cold build and the
+    # only place its cost is observable. Vendoring noodles put sam/vcf/csi into
+    # this crate's transitive tree, against a standing "keep the device crate
+    # thin" constraint; the number below is what decides whether that needs
+    # fixing. Timed in Python rather than with /usr/bin/time, which is absent
+    # from the Colab image and failed silently once already.
+    started = time.monotonic()
+    run(f"cargo build -p fritillaria-cuda --features {features} --tests")
+    build_seconds = time.monotonic() - started
+    print(f"[job] COLD_BUILD_SECONDS {build_seconds:.1f}", flush=True)
+
+    # `--no-fail-fast` because the VM is billable and one rental should yield
+    # every result it can. Without it cargo stops at the first failing test
+    # *binary*, so a broken unit test in the lib target means the device tests —
+    # the entire reason for renting a GPU — never run at all. Observed
+    # 2026-09-10: an over-strict FFI assertion failed and the whole compression
+    # measurement was lost, at the cost of a full L4 bootstrap.
+    #
+    # It does not weaken the check: cargo still exits non-zero if anything
+    # failed, `run` still aborts on that, and the `[job] OK` sentinel is still
+    # only reachable when every test passed.
+    output = run(
+        f"cargo test -p fritillaria-cuda --features {features} "
+        "--no-fail-fast -- --nocapture"
+    )
 
     # Device tests skip when no GPU is present, which is correct locally but a
     # silent failure here — we paid for a GPU VM precisely to exercise them.

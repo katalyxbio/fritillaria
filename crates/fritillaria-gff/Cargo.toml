@@ -1,0 +1,42 @@
+[package]
+name = "fritillaria-gff"
+version = "0.62.0"
+# Vendored unchanged from `noodles-gff`; the authorship below is upstream's and
+# stays. See VENDORED.md.
+authors = ["Michael Macias <zaeleus@gmail.com>"]
+license = "MIT"
+edition.workspace = true
+rust-version.workspace = true
+description = "Generic Feature Format (GFF) reader and writer"
+homepage = "https://github.com/katalyxbio/fritillaria"
+repository = "https://github.com/katalyxbio/fritillaria"
+documentation = "https://docs.rs/fritillaria-gff"
+categories = ["parser-implementations", "science::bioinformatics"]
+
+[features]
+async = ["dep:futures", "dep:tokio"]
+
+[dependencies]
+bstr.workspace = true
+indexmap.workspace = true
+lexical-core.workspace = true
+fritillaria-bgzf = { path = "../fritillaria-bgzf", version = "0.51.0" }
+fritillaria-core = { path = "../fritillaria-core", version = "0.20.0" }
+fritillaria-csi = { path = "../fritillaria-csi", version = "0.61.0" }
+percent-encoding.workspace = true
+
+futures = { workspace = true, optional = true, features = ["std"] }
+tokio = { workspace = true, optional = true, features = ["io-util"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["fs", "macros", "rt-multi-thread"] }
+
+[lints.rust]
+missing_docs = "warn"
+
+[package.metadata.docs.rs]
+features = ["async"]
+
+[[example]]
+name = "gff_count_async"
+required-features = ["async"]

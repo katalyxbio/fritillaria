@@ -1,6 +1,6 @@
 //! BCF boundary discovery on device, diffed against the CPU reference.
 //!
-//! The oracle is `fritillaria_bcf::speculative`, which is itself checked
+//! The oracle is `fritillaria_bcf::columnar::speculative`, which is itself checked
 //! against `bcftools` in `fritillaria-bcf/tests/bcftools.rs`. So a pass here
 //! chains back to htslib rather than to our own opinion of the format.
 //!
@@ -18,7 +18,9 @@
 
 use std::path::PathBuf;
 
-use fritillaria_bcf::{Proof, header::parse_header, scan_records, scan_records_speculative};
+use fritillaria_bcf::columnar::{
+    Proof, header::parse_header, scan_records, scan_records_speculative,
+};
 use fritillaria_bgzf::{CpuCodec, DeviceBgzfReader, discover_blocks};
 use fritillaria_core::{BlockCodec, DeviceBlockCodec, InflateBatch};
 use fritillaria_cuda::{BcfScanner, CudaCodec};

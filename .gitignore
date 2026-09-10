@@ -11,3 +11,9 @@
 
 # Left behind when the remote job scripts are imported for local testing.
 __pycache__/
+
+# Engineering notes for Claude Code: design rationale, measurements and the
+# process lessons behind them. Kept local for now — it is written for whoever
+# is building this, not for whoever is adopting it. README.md is the public
+# account of the same project.
+CLAUDE.md

@@ -1,0 +1,331 @@
+//! FASTA reader and iterators.
+
+mod builder;
+pub(crate) mod definition;
+mod records;
+pub mod sequence;
+
+pub use self::{builder::Builder, records::Records};
+
+use std::io::{self, BufRead, Seek, SeekFrom};
+
+use fritillaria_core::{Position, Region};
+
+use self::definition::read_definition;
+use crate::{Record, fai, record::Definition};
+
+pub(crate) const DEFINITION_PREFIX: u8 = b'>';
+
+/// A FASTA reader.
+pub struct Reader<R> {
+    inner: R,
+    buf: Vec<u8>,
+}
+
+impl<R> Reader<R> {
+    /// Returns a reference to the underlying reader.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use std::io;
+    /// use fritillaria_fasta as fasta;
+    /// let reader = fasta::io::Reader::new(io::empty());
+    /// let _inner = reader.get_ref();
+    /// ```
+    pub fn get_ref(&self) -> &R {
+        &self.inner
+    }
+
+    /// Returns a mutable reference to the underlying reader.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use std::io;
+    /// use fritillaria_fasta as fasta;
+    /// let mut reader = fasta::io::Reader::new(io::empty());
+    /// let _inner = reader.get_mut();
+    /// ```
+    pub fn get_mut(&mut self) -> &mut R {
+        &mut self.inner
+    }
+
+    /// Returns the underlying reader.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use std::io;
+    /// use fritillaria_fasta as fasta;
+    /// let reader = fasta::io::Reader::new(io::empty());
+    /// let _inner = reader.into_inner();
+    /// ```
+    pub fn into_inner(self) -> R {
+        self.inner
+    }
+}
+
+impl<R> Reader<R>
+where
+    R: BufRead,
+{
+    /// Creates a FASTA reader.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use fritillaria_fasta as fasta;
+    /// let data = b">sq0\nACGT\n>sq1\nNNNN\nNNNN\nNN\n";
+    /// let mut reader = fasta::io::Reader::new(&data[..]);
+    /// ```
+    pub fn new(inner: R) -> Self {
+        Self {
+            inner,
+            buf: Vec::new(),
+        }
+    }
+
+    /// Reads a definition.
+    ///
+    /// Definitions are assumed to match the following form: `><name>[<whitespace><description>]`.
+    ///
+    /// The position of the stream is expected to be at the start or at the start of another
+    /// definition.
+    ///
+    /// If successful, this returns the number of bytes read from the stream. If the number of
+    /// bytes read is 0, the stream reached EOF.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use std::io;
+    /// use fritillaria_fasta::{self as fasta, record::Definition};
+    ///
+    /// let data = b">sq0\nACGT\n>sq1\nNNNN\nNNNN\nNN\n";
+    /// let mut reader = fasta::io::Reader::new(&data[..]);
+    ///
+    /// let mut definition = Definition::default();
+    /// reader.read_definition(&mut definition)?;
+    ///
+    /// assert_eq!(definition.name(), "sq0");
+    /// # Ok::<(), io::Error>(())
+    /// ```
+    pub fn read_definition(&mut self, definition: &mut Definition) -> io::Result<usize> {
+        read_definition(&mut self.inner, &mut self.buf, definition)
+    }
+
+    /// Reads a sequence.
+    ///
+    /// The given buffer consumes a sequence without newlines until another definition or EOF is
+    /// reached.
+    ///
+    /// The position of the stream is expected to be at the start of a sequence, which is directly
+    /// after a definition.
+    ///
+    /// If successful, this returns the number of bases read from the stream. If the number of
+    /// bases read is 0, the stream reached EOF (though this case is likely an error).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use std::io;
+    /// use fritillaria_fasta::{self as fasta, record::Definition};
+    ///
+    /// let data = b">sq0\nACGT\n>sq1\nNNNN\nNNNN\nNN\n";
+    /// let mut reader = fasta::io::Reader::new(&data[..]);
+    /// reader.read_definition(&mut Definition::default())?;
+    ///
+    /// let mut buf = Vec::new();
+    /// reader.read_sequence(&mut buf)?;
+    ///
+    /// assert_eq!(buf, b"ACGT");
+    /// # Ok::<(), io::Error>(())
+    /// ```
+    pub fn read_sequence(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
+        use self::sequence::read_sequence;
+        read_sequence(&mut self.inner, buf)
+    }
+
+    /// Returns a sequence reader.
+    ///
+    /// A [`sequence::Reader`] can be used for lower-level reading of the raw sequence.
+    ///
+    /// The position of the stream is expected to be at the start of a sequence to read a full
+    /// sequence or within a sequence to read a partial one.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use std::io::{self, Read};
+    /// use fritillaria_fasta::{self as fasta, record::Definition};
+    ///
+    /// let data = b">sq0\nACGT\n>sq1\nNNNN\nNNNN\nNN\n";
+    /// let mut reader = fasta::io::Reader::new(&data[..]);
+    /// reader.read_definition(&mut Definition::default())?;
+    ///
+    /// let mut sequence_reader = reader.sequence_reader();
+    /// let mut buf = vec![0; 2];
+    /// sequence_reader.read_exact(&mut buf)?;
+    ///
+    /// assert_eq!(buf, b"AC");
+    /// # Ok::<(), io::Error>(())
+    /// ```
+    pub fn sequence_reader(&mut self) -> sequence::Reader<'_, R> {
+        sequence::Reader::new(self.get_mut())
+    }
+
+    /// Returns an iterator over records starting from the current stream position.
+    ///
+    /// The position of the stream is expected to be at the start or at the start of another
+    /// definition.
+    ///
+    /// ```
+    /// # use std::io;
+    /// use fritillaria_fasta::{self as fasta, record::{Definition, Sequence}};
+    ///
+    /// let data = b">sq0\nACGT\n>sq1\nNNNN\nNNNN\nNN\n";
+    /// let mut reader = fasta::io::Reader::new(&data[..]);
+    ///
+    /// let mut records = reader.records();
+    ///
+    /// assert_eq!(records.next().transpose()?, Some(fasta::Record::new(
+    ///     Definition::new("sq0", None),
+    ///     Sequence::from(b"ACGT".to_vec()),
+    /// )));
+    ///
+    /// assert_eq!(records.next().transpose()?, Some(fasta::Record::new(
+    ///     Definition::new("sq1", None),
+    ///     Sequence::from(b"NNNNNNNNNN".to_vec()),
+    /// )));
+    ///
+    /// assert!(records.next().is_none());
+    /// # Ok::<(), io::Error>(())
+    /// ```
+    pub fn records(&mut self) -> Records<'_, R> {
+        Records::new(self)
+    }
+}
+
+impl<R> Reader<R>
+where
+    R: BufRead + Seek,
+{
+    /// Returns a record of the given region.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use std::io::Cursor;
+    /// use std::num::NonZero;
+    ///
+    /// use fritillaria_core::Region;
+    /// use fritillaria_fasta::{self as fasta, fai, record::{Definition, Sequence}};
+    ///
+    /// let line_base_count = const { NonZero::new(5).unwrap() };
+    /// let line_width = const { NonZero::new(5).unwrap() };
+    /// let index = fai::Index::from(vec![
+    ///     fai::Record::new("sq0", 4, 5, line_base_count, line_width),
+    ///     fai::Record::new("sq1", 4, 15, line_base_count, line_width),
+    ///     fai::Record::new("sq2", 4, 25, line_base_count, line_width),
+    /// ]);
+    ///
+    /// let src = b">sq0\nNNNN\n>sq1\nACGT\n>sq2\nNNNN\n";
+    /// let mut reader = fasta::io::Reader::new(Cursor::new(src));
+    ///
+    /// let region = Region::new("sq1", ..);
+    /// let record = reader.query(&index, &region)?;
+    /// assert_eq!(record, fasta::Record::new(
+    ///     Definition::new("sq1", None),
+    ///     Sequence::from(b"ACGT".to_vec()),
+    /// ));
+    ///
+    /// let region = "sq1:2-3".parse()?;
+    /// let record = reader.query(&index, &region)?;
+    /// assert_eq!(record, fasta::Record::new(
+    ///     Definition::new("sq1:2-3", None),
+    ///     Sequence::from(b"CG".to_vec()),
+    /// ));
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn query(&mut self, index: &fai::Index, region: &Region) -> io::Result<Record> {
+        use self::sequence::read_sequence_limit;
+        use crate::record::{Definition, Sequence};
+
+        let pos = index.query(region)?;
+        self.get_mut().seek(SeekFrom::Start(pos))?;
+
+        let definition = Definition::new(region.to_string(), None);
+
+        let interval = region.interval();
+        let start = usize::from(interval.start().unwrap_or(Position::MIN));
+        let end = usize::from(interval.end().unwrap_or(Position::MAX));
+        let len = end - start + 1;
+
+        let mut raw_sequence = Vec::new();
+        read_sequence_limit(&mut self.inner, len, &mut raw_sequence)?;
+
+        let sequence = Sequence::from(raw_sequence);
+
+        Ok(Record::new(definition, sequence))
+    }
+}
+
+pub(crate) fn read_line<R>(reader: &mut R, buf: &mut Vec<u8>) -> io::Result<usize>
+where
+    R: BufRead,
+{
+    const LINE_FEED: u8 = b'\n';
+    const CARRIAGE_RETURN: u8 = b'\r';
+
+    match reader.read_until(LINE_FEED, buf)? {
+        0 => Ok(0),
+        n => {
+            if buf.ends_with(&[LINE_FEED]) {
+                buf.pop();
+
+                if buf.ends_with(&[CARRIAGE_RETURN]) {
+                    buf.pop();
+                }
+            }
+
+            Ok(n)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_read_definition() -> io::Result<()> {
+        let data = b">sq0\nACGT\n";
+        let mut reader = Reader::new(&data[..]);
+
+        let mut description = Definition::default();
+        reader.read_definition(&mut description)?;
+
+        assert_eq!(description.name(), "sq0");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_read_line() -> io::Result<()> {
+        fn t(buf: &mut Vec<u8>, mut src: &[u8], expected: &[u8]) -> io::Result<()> {
+            buf.clear();
+            read_line(&mut src, buf)?;
+            assert_eq!(buf, expected);
+            Ok(())
+        }
+
+        let mut buf = Vec::new();
+
+        t(&mut buf, b"noodles\n", b"noodles")?;
+        t(&mut buf, b"noodles\r\n", b"noodles")?;
+        t(&mut buf, b"noodles", b"noodles")?;
+
+        Ok(())
+    }
+}

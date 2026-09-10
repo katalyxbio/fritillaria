@@ -1,7 +1,7 @@
 //! Differential tests for the inflate kernel.
 //!
 //! Every assertion compares GPU output against the CPU reference codec on the
-//! same input. That is the strategy CLAUDE.md prescribes: the CPU path is the
+//! same input. That is the strategy throughout: the CPU path is the
 //! oracle, and the GPU path is correct exactly when it is byte-identical to it.
 //!
 //! Needs a real device, so these **skip** rather than fail when none is

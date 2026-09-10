@@ -1,42 +1,67 @@
 [package]
 name = "fritillaria-bgzf"
-description = "BGZF block discovery, CPU reference codec, and writer."
-version.workspace = true
+description = "BGZF: CPU reader and writer, block discovery, and the codec seam."
+# Carries the vendored noodles-bgzf version; see the root manifest.
+version = "0.51.0"
 edition.workspace = true
 rust-version.workspace = true
-license.workspace = true
+# Mixed: `io`/`gzi`/`async`/`virtual_position` are vendored from noodles-bgzf,
+# the rest is ours. See VENDORED.md.
+license = "Apache-2.0 AND MIT"
 repository.workspace = true
 
 [features]
 default = []
-# Implements the noodles BGZF reader traits, so every noodles format crate
-# (bam, bcf, vcf, tabix, csi) can sit on top of this reader unchanged.
-noodles = ["dep:noodles-bgzf"]
+async = ["dep:futures", "dep:pin-project-lite", "dep:tokio", "dep:tokio-util"]
+libdeflate = ["dep:libdeflater"]
 # A host-memory DeviceBlockCodec, so the device-resident seam is exercisable
 # without a GPU. Scaffolding for tests in this and downstream crates.
 testing = ["fritillaria-core/testing"]
 
 [dependencies]
 fritillaria-core.workspace = true
-noodles-bgzf = { workspace = true, optional = true }
 crc32fast.workspace = true
 miniz_oxide.workspace = true
+
+# Vendored path.
+bytes.workspace = true
+crossbeam-channel = "0.5.6"
+rayon = "1.12.0"
+zlib-rs = { version = "0.6.3", features = ["avx512"] }
+
+futures = { workspace = true, optional = true, features = ["std"] }
+libdeflater = { workspace = true, optional = true }
+pin-project-lite = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true, features = ["fs", "io-util", "rt"] }
+tokio-util = { version = "0.7.0", optional = true, features = ["codec"] }
 
 [dev-dependencies]
 # The device stand-ins are behind a feature in core; this crate's own tests
 # need them, and a dev-dependency is how they get turned on for `cargo test`
 # without leaking scaffolding into a normal build.
 fritillaria-core = { workspace = true, features = ["testing"] }
-# Proves noodles format crates compose on top of our reader; see
-# tests/noodles_interop.rs. Dev-only: the library itself needs only bgzf.
+# The format crates sit on top of this reader; tests/noodles_interop.rs proves
+# they compose on the codec-driven one unchanged.
 #
 # bcf and vcf are here for the claim that the *container* is the dividing line:
 # if that is right, a second BGZF format needs no new code from us, and the
 # test is what turns that from an argument into a fact.
-noodles-bam.workspace = true
-noodles-bcf.workspace = true
-noodles-sam.workspace = true
-noodles-vcf.workspace = true
+fritillaria-bam.workspace = true
+fritillaria-bcf.workspace = true
+fritillaria-sam.workspace = true
+fritillaria-vcf.workspace = true
+tokio = { workspace = true, features = ["io-std", "macros", "rt-multi-thread"] }
 
 [lints]
 workspace = true
+
+[package.metadata.docs.rs]
+features = ["async"]
+
+[[example]]
+name = "bgzf_read_async"
+required-features = ["async"]
+
+[[example]]
+name = "bgzf_write_async"
+required-features = ["async"]

@@ -1,9 +1,10 @@
-//! The whole stack: a real htslib BAM, decompressed on the GPU, parsed by noodles.
+//! The whole stack: a real htslib BAM, decompressed on the GPU, parsed on the CPU.
 //!
-//! This is the thesis of the project reduced to one test. noodles does the
-//! record parsing; the GPU does the decompression; nothing was forked. If this
-//! passes, the same substitution accelerates BCF, `bgzip`ped VCF, and every
-//! tabix-indexed format, because they all read through the same BGZF trait.
+//! This is the thesis of the project reduced to one test. The vendored reader does
+//! the record parsing, the GPU does the decompression, and neither was modified
+//! to suit the other. If this passes, the same substitution accelerates BCF,
+//! `bgzip`ped VCF, and every tabix-indexed format, because they all read through
+//! the same BGZF trait.
 //!
 //! Skips without a device — but `scripts/colab_job.py` fails the run if a
 //! device test skips on a GPU VM, so this cannot quietly stop being checked.
@@ -12,9 +13,9 @@
 
 use std::path::PathBuf;
 
+use fritillaria_bam as bam;
 use fritillaria_bgzf::BgzfReader;
 use fritillaria_cuda::CudaCodec;
-use noodles_bam as bam;
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -34,7 +35,7 @@ fn codec() -> Option<CudaCodec> {
 }
 
 #[test]
-fn noodles_reads_an_htslib_bam_decompressed_on_the_gpu() {
+fn the_vendored_reader_reads_an_htslib_bam_decompressed_on_the_gpu() {
     let Some(codec) = codec() else { return };
 
     let file = std::fs::File::open(fixture("htslib.bam")).unwrap();

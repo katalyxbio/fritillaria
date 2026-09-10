@@ -3,7 +3,7 @@
 //! Kernels ship as `.cu` **source** and are compiled by NVRTC on whichever
 //! machine has the GPU. Nothing here requires `nvcc` at build time, so the
 //! whole workspace builds on a machine with no CUDA toolkit — which is the
-//! normal development case for this project (see CLAUDE.md).
+//! normal development case for this project.
 //!
 //! # Feature gate
 //!
@@ -31,13 +31,16 @@
 //! [`CudaCodec`] runs our own inflate kernel; [`NvcompCodec`] runs NVIDIA's.
 //! They implement the same two traits with the same mandatory verification, so
 //! choosing between them is a performance decision. nvCOMP is the intended fast
-//! path and ours is the portable fallback — see [`nvcomp`] and CLAUDE.md.
+//! path and ours is the portable fallback — see [`nvcomp`].
 
 #[cfg(feature = "cuda")]
 mod backend;
 
 pub mod bam;
 pub mod bcf;
+pub mod fasta;
+pub mod fastq;
+pub mod text;
 
 #[cfg(feature = "nvcomp")]
 pub mod nvcomp;
@@ -46,9 +49,12 @@ pub mod nvcomp;
 pub use backend::{CudaAlloc, CudaContext, InflateTimings};
 pub use bam::{BamDecoder, DecodeTimings};
 pub use bcf::BcfScanner;
+pub use fasta::FastaCompactor;
+pub use fastq::FastqScanner;
+pub use text::TextScanner;
 
 #[cfg(feature = "nvcomp")]
-pub use nvcomp::{NvcompCodec, NvcompContext};
+pub use nvcomp::{CompressBudget, CompressTimings, NvcompCodec, NvcompCompressor, NvcompContext};
 
 /// The cudarc this crate links, re-exported.
 ///
@@ -73,19 +79,45 @@ pub const INFLATE_KERNEL_SRC: &str = include_str!("../kernels/inflate.cu");
 /// Source of the BAM boundary-scan and columnar decode kernels, compiled at
 /// runtime by NVRTC.
 ///
-/// The CPU reference for these is `fritillaria_bam::blocked`; see [`bam`].
+/// The CPU reference for these is `fritillaria_bam::columnar::blocked`; see [`bam`].
 pub const BAM_DECODE_KERNEL_SRC: &str = include_str!("../kernels/bam_decode.cu");
 
 /// Source of the BCF boundary-scan kernels, compiled at runtime by NVRTC.
 ///
-/// The CPU reference for these is `fritillaria_bcf::speculative`; see [`bcf`].
+/// The CPU reference for these is `fritillaria_bcf::columnar::speculative`; see [`bcf`].
 pub const BCF_SCAN_KERNEL_SRC: &str = include_str!("../kernels/bcf_scan.cu");
+
+/// Source of the FASTQ boundary-scan and decode kernels, compiled by NVRTC.
+///
+/// The CPU reference for these is `fritillaria_fastq::columnar::speculative`;
+/// see [`fastq`].
+pub const FASTQ_SCAN_KERNEL_SRC: &str = include_str!("../kernels/fastq_scan.cu");
+
+/// Source of the FASTA compaction kernels, compiled at runtime by NVRTC.
+///
+/// The CPU reference for these is `fritillaria_fasta::columnar`; see [`fasta`].
+pub const FASTA_COMPACT_KERNEL_SRC: &str = include_str!("../kernels/fasta_compact.cu");
+
+/// Source of the tab-delimited text scan kernels, compiled by NVRTC.
+///
+/// One set for SAM, VCF, BED, GFF and GTF; the CPU reference is
+/// `fritillaria_text::columnar`. See [`text`].
+pub const TEXT_SCAN_KERNEL_SRC: &str = include_str!("../kernels/text_scan.cu");
 
 /// Source of the payload-restaging kernel, compiled at runtime by NVRTC.
 ///
 /// Only the nvCOMP path needs this; see [`nvcomp`] for why BGZF payloads have
 /// to be moved before nvCOMP will read them.
 pub const GATHER_KERNEL_SRC: &str = include_str!("../kernels/gather.cu");
+
+/// Source of the BGZF framing kernel, compiled at runtime by NVRTC.
+///
+/// The write-side counterpart to the gather: nvCOMP's *compression* output
+/// alignment is 8 and its sizes are not known before the launch, so compressed
+/// chunks land in padded slots and this gathers the dense BGZF stream out of
+/// them. The CPU reference is `fritillaria_bgzf::frame_block`; see
+/// [`nvcomp::compress`].
+pub const BGZF_FRAME_KERNEL_SRC: &str = include_str!("../kernels/bgzf_frame.cu");
 
 /// Whether this build can use a GPU at all.
 ///
@@ -281,11 +313,37 @@ mod tests {
                 "{name} must be present for the launcher to find it"
             );
         }
+        for name in [
+            "fasta_find_contigs",
+            "fasta_compact_uniform",
+            "fasta_compact_scan",
+        ] {
+            assert!(
+                FASTA_COMPACT_KERNEL_SRC.contains(name),
+                "{name} must be present for the launcher to find it"
+            );
+        }
+        for name in ["text_find_lines", "text_count_fields", "text_write_fields"] {
+            assert!(
+                TEXT_SCAN_KERNEL_SRC.contains(name),
+                "{name} must be present for the launcher to find it"
+            );
+        }
+        for name in ["fastq_sieve", "fastq_decode", "fastq_walk"] {
+            assert!(
+                FASTQ_SCAN_KERNEL_SRC.contains(name),
+                "{name} must be present for the launcher to find it"
+            );
+        }
         for src in [
             CRC32_KERNEL_SRC,
             INFLATE_KERNEL_SRC,
             GATHER_KERNEL_SRC,
             BAM_DECODE_KERNEL_SRC,
+            BCF_SCAN_KERNEL_SRC,
+            FASTQ_SCAN_KERNEL_SRC,
+            FASTA_COMPACT_KERNEL_SRC,
+            TEXT_SCAN_KERNEL_SRC,
         ] {
             assert!(
                 src.contains("extern \"C\""),

@@ -206,7 +206,7 @@ Measured on these files:
 So a BCF record straddles essentially every interior block boundary, where a
 BAM record straddles almost none. That inverts the assumption
 `fritillaria-bam`'s device scan is built on, and it is why
-`fritillaria-bcf::looks_like_a_record` exists. See `docs/bcf-boundaries.md`.
+`fritillaria-bcf::columnar::looks_like_a_record` exists. See `docs/bcf-boundaries.md`.
 
 ### `kg_phase3.bcf`
 
@@ -296,3 +296,162 @@ bcftools annotate -x INFO/platforms testdata/giab_hg002.bcf \
   unit tests only.
 - **`IDX` in a non-ascending order.** The gap fixture has ascending numbers with
   a hole; nothing produces genuinely permuted ones.
+
+## FASTQ fixtures
+
+Generated from the BAM fixtures already here, so the reads are real and the
+container is htslib's rather than our own writer's — the rule against circular
+fixtures applies to FASTQ too.
+
+```bash
+samtools fastq -0 testdata/ont_ultralong.fastq.gz  testdata/ont_ultralong.bam
+samtools fastq -0 testdata/pacbio_hifi.fastq.gz    testdata/pacbio_hifi.bam
+samtools fastq -0 testdata/illumina.fastq.gz       testdata/htslib_multiblock.bam
+```
+
+`-0` and not `-o`: `-o` catches reads flagged READ1/READ2, and these are
+unpaired, so with `-o` they go to stdout and the file gets an empty BGZF stream.
+That looks like success — a valid 28-byte file — which is exactly the sort of
+quiet failure this directory's README exists to prevent.
+
+| File | Reads | Records | Sequence length | BGZF blocks |
+|---|---|---|---|---|
+| `ont_ultralong.fastq.gz` | ONT ultra-long | 3 | 5,556–162,932 | 9 |
+| `pacbio_hifi.fastq.gz` | PacBio HiFi | 8 | 13,661–20,499 | — |
+| `illumina.fastq.gz` | Illumina | 4,000 | 100 | — |
+| `pacbio_hifi.plain.fastq.gz` | PacBio HiFi | 8 | 13,661–20,499 | **none — plain gzip** |
+
+**What each one is for.**
+
+- **ONT** is the seam fixture: a single record of 162,932 bases spans many BGZF
+  blocks, so the carry-the-partial-record loop is exercised for real rather than
+  assumed. Same role `ont_ultralong.bam` plays for BAM.
+- **Illumina** is the *adversarial* one, and the reason it is here rather than
+  being redundant with the others. **83 of its quality lines begin with `@`**,
+  and 13,159 `@` bytes appear inside quality lines — `@` is Phred+33 Q31, an
+  ordinary score. Those are precisely the decoys a record-start scan must
+  reject. Without this fixture a sweep reporting zero false positives would be
+  reporting that the hard case never came up. See `docs/fastq-boundaries.md`.
+- **`pacbio_hifi.plain.fastq.gz`** is a single DEFLATE stream, deliberately not
+  bgzipped: `1f 8b 08 00` versus BGZF's `1f 8b 08 04`. It is the fixture for the
+  path that **cannot** be block-parallel, so the API's refusal to pretend
+  otherwise is testable rather than merely documented.
+
+If any of these is regenerated from different reads, check the decoy counts
+still hold — a fixture that is supposed to exercise a case should assert that it
+does, which is the lesson `htslib_multiblock.bam` taught by not doing it.
+
+## FASTA fixture
+
+`controls.fa` — phiX174 (NC_001422.1) and lambda (NC_001416.1), fetched from
+NCBI, which wrote the 70-column wrapping. Both are standard sequencing controls,
+so the file is small and the sequences are ones a bioinformatician recognises.
+
+```bash
+curl -s "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=nuccore\
+&id=NC_001422.1,NC_001416.1&rettype=fasta&retmode=text" -o testdata/controls.fa
+samtools faidx testdata/controls.fa
+```
+
+**The `.fai` is committed alongside it and is the oracle**, not a build
+artefact. Its five columns — NAME, LENGTH, OFFSET, LINEBASES, LINEWIDTH — are
+exactly what `fritillaria_fasta::columnar::RecordBounds` holds, so a
+disagreement means one of us is wrong about the format rather than about
+plumbing. `the_committed_fai_is_what_samtools_produces_today` regenerates it
+when samtools is installed, so the oracle cannot go stale unnoticed.
+
+| | |
+|---|---|
+| contigs | 2 |
+| bases | 5,386 and 48,502 |
+| wrapping | 70 bases per line, uniform |
+| blank line between records | **yes** — `\n\n>` |
+| base composition | **100% ACGT** |
+
+**Two properties matter and both were found by using it.**
+
+The blank line between records is real NCBI formatting, and `samtools faidx`
+indexes such a file without complaint. Counting it as a sequence line made every
+contig look non-uniform, which would have sent the whole file down the byte-wise
+compaction fallback — correct, but single-threaded.
+
+The 100% ACGT composition **bounds what may be claimed**. A real reference has
+millions of `N`s at centromeres, telomeres and assembly gaps, plus IUPAC
+ambiguity codes in some assemblies. 2-bit packing is not implemented partly
+because nothing here could catch it going wrong, and
+`every_base_is_a_nucleotide_code` fails if this file is ever regenerated from
+something that would.
+
+## Index fixtures
+
+`htslib_multiblock.bam.bai` — written by `samtools index`, so it is htslib's own
+index rather than one of ours.
+
+```bash
+samtools index testdata/htslib_multiblock.bam
+```
+
+It exists for `fritillaria-bgzf/tests/seek.rs`, which runs a real region query
+through the codec-driven reader and compares it against the same query through
+the vendored one. Without `bgzf::io::Seek` that path did not exist at all and
+indexed access fell back to the CPU reader entirely.
+
+## Text fixtures
+
+Three formats from three different writers, which is the point: a scanner tested
+against one tool's output tests that tool's habits as much as the format.
+
+```bash
+samtools view -h testdata/htslib_multiblock.bam > testdata/reads.sam
+bcftools view testdata/giab_hg002.bcf          > testdata/calls.vcf
+curl -s "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=nuccore\
+&id=NC_001416.1&rettype=gff3&retmode=text"     -o testdata/lambda.gff3
+```
+
+| File | Writer | Header lines | Records | Fields |
+|---|---|---|---|---|
+| `reads.sam` | samtools | 4 | 4,000 | 12 |
+| `calls.vcf` | bcftools | 235 | 275 | 10 |
+| `lambda.gff3` | NCBI | 5 | 309 | 9 |
+
+**`reads.sam` carries a specific trap on purpose.** `"` is Phred+33 Q1, so it
+appears throughout the quality strings — and a scanner that treats it as a quote
+character, as a CSV parser would, reports 1,956 phantom "tabs inside quotes"
+here. There is no quoting in SAM, VCF, BED or GFF3;
+`the_sam_fixture_still_contains_the_quote_bytes_that_misled_the_first_scan`
+fails if the fixture is ever regenerated without them.
+
+**No BED or GTF fixture.** Both are the same shape — newline-delimited records,
+tab-delimited fields, `#` comments — and `Dialect::BED` exists, but nothing here
+exercises them. GTF is the one format of the five that really quotes, inside its
+final attributes column; the spec forbids a tab there, and that is reasoning
+from the spec rather than a measurement.
+
+### BED and GTF
+
+Added after the first text commit noted their absence.
+
+```bash
+curl -sL "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/840/245/\
+GCF_000840245.1_ViralProj14204/GCF_000840245.1_ViralProj14204_genomic.gtf.gz" \
+  | gunzip > testdata/lambda.gtf
+curl -sL "https://hgdownload.soe.ucsc.edu/goldenPath/hg38/database/cytoBand.txt.gz" \
+  | gunzip > testdata/cytoband.bed
+```
+
+| File | Writer | Records | Fields |
+|---|---|---|---|
+| `lambda.gtf` | NCBI RefSeq | 357 | 9 |
+| `cytoband.bed` | UCSC | 1,549 | 5 |
+
+**`lambda.gtf` settles a claim that was previously read from a spec.** GTF is
+the only one of the five formats that quotes anything, and the shared scanner
+splits on tabs with no quote tracking — which is only sound if a quoted value
+never contains a tab. Every one of the 357 records has quoted attributes, and
+**none contains a tab inside them**. `gtf_quotes_never_contain_a_tab` asserts it.
+
+**`cytoband.bed` is BED-shaped rather than canonical BED**: its fifth column is
+a Giemsa stain name, not a 0–1000 score, so it is not valid BED5. That does not
+matter for a framing scan, which interprets nothing — and the vendored BED3
+reader parses all 1,549 records, so it still works as an oracle for the first
+three columns.

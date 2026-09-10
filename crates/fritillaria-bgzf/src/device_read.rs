@@ -20,7 +20,7 @@
 //! It also means a record larger than a batch resolves itself. Each round
 //! prepends the carried blocks and appends a fresh read, so the window grows
 //! until the record fits. That is the "must grow its buffer to fit a whole
-//! record" rule from CLAUDE.md, and it is handled here rather than left to
+//! record" rule, and it is handled here rather than left to
 //! every caller.
 //!
 //! # Ownership: why batches are handed over rather than lent
@@ -146,7 +146,7 @@ impl<R: Read, C: DeviceBlockCodec> DeviceBgzfReader<R, C> {
     /// Reports that everything before `tail` was consumed.
     ///
     /// `tail` is an offset into the batch most recently returned — for BAM,
-    /// exactly what [`scan_records`](fritillaria_bam::scan_records) and
+    /// exactly what [`scan_records`](fritillaria_bam::columnar::scan_records) and
     /// `DeviceRecordBatch::tail` report. The block containing it, and every
     /// block after it, is re-inflated at the front of the next batch.
     ///

@@ -1,0 +1,111 @@
+[package]
+name = "fritillaria-util"
+version = "0.85.0"
+# Vendored unchanged from `noodles-util`; the authorship below is upstream's and
+# stays. See VENDORED.md.
+authors = ["Michael Macias <zaeleus@gmail.com>"]
+license = "MIT"
+edition.workspace = true
+rust-version.workspace = true
+description = "Format sniffing and generic alignment and variant readers and writers"
+homepage = "https://github.com/katalyxbio/fritillaria"
+repository = "https://github.com/katalyxbio/fritillaria"
+documentation = "https://docs.rs/fritillaria-util"
+categories = ["science::bioinformatics"]
+
+[features]
+alignment = [
+  "dep:fritillaria-bam",
+  "dep:fritillaria-bgzf",
+  "dep:fritillaria-core",
+  "dep:fritillaria-cram",
+  "dep:fritillaria-csi",
+  "dep:fritillaria-fasta",
+  "dep:fritillaria-sam",
+]
+async = [
+  "dep:futures",
+  "dep:tokio",
+  "fritillaria-bam?/async",
+  "fritillaria-bcf?/async",
+  "fritillaria-bgzf?/async",
+  "fritillaria-cram?/async",
+  "fritillaria-sam?/async",
+  "fritillaria-vcf?/async",
+]
+variant = [
+  "dep:fritillaria-bcf",
+  "dep:fritillaria-bgzf",
+  "dep:fritillaria-core",
+  "dep:fritillaria-csi",
+  "dep:fritillaria-vcf",
+]
+
+[dependencies]
+bstr.workspace = true
+flate2 = { workspace = true }
+fritillaria-bam = { path = "../fritillaria-bam", version = "0.95.0", optional = true }
+fritillaria-bcf = { path = "../fritillaria-bcf", version = "0.91.0", optional = true }
+fritillaria-bgzf = { path = "../fritillaria-bgzf", version = "0.51.0", optional = true }
+fritillaria-core = { path = "../fritillaria-core", version = "0.20.0", optional = true }
+fritillaria-cram = { path = "../fritillaria-cram", version = "0.99.0", optional = true }
+fritillaria-csi = { path = "../fritillaria-csi", version = "0.61.0", optional = true }
+fritillaria-fasta = { path = "../fritillaria-fasta", version = "0.66.0", optional = true }
+fritillaria-sam = { path = "../fritillaria-sam", version = "0.90.0", optional = true }
+fritillaria-vcf = { path = "../fritillaria-vcf", version = "0.93.0", optional = true }
+
+futures = { workspace = true, optional = true, features = ["std"] }
+tokio = { workspace = true, optional = true, features = ["fs", "io-util"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["io-std", "macros", "rt-multi-thread"] }
+
+[lints.rust]
+missing_docs = "warn"
+
+[package.metadata.docs.rs]
+all-features = true
+
+[[example]]
+name = "util_alignment_depth"
+required-features = ["alignment"]
+
+[[example]]
+name = "util_alignment_query"
+required-features = ["alignment"]
+
+[[example]]
+name = "util_alignment_rewrite"
+required-features = ["alignment"]
+
+[[example]]
+name = "util_alignment_rewrite_async"
+required-features = ["alignment", "async"]
+
+[[example]]
+name = "util_alignment_view"
+required-features = ["alignment"]
+
+[[example]]
+name = "util_alignment_view_async"
+required-features = ["alignment", "async"]
+
+[[example]]
+name = "util_variant_query"
+required-features = ["variant"]
+
+[[example]]
+name = "util_variant_rewrite"
+required-features = ["variant"]
+
+[[example]]
+name = "util_variant_rewrite_async"
+required-features = ["async", "variant"]
+
+[[example]]
+name = "util_variant_view"
+required-features = ["variant"]
+
+[[example]]
+name = "util_variant_view_async"
+required-features = ["async", "variant"]

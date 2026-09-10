@@ -1,0 +1,70 @@
+[package]
+name = "fritillaria-vcf"
+version = "0.93.0"
+# Vendored unchanged from `noodles-vcf`; the authorship below is upstream's and
+# stays. See VENDORED.md.
+authors = ["Michael Macias <zaeleus@gmail.com>"]
+license = "MIT"
+edition.workspace = true
+rust-version.workspace = true
+description = "Variant Call Format (VCF) reader and writer"
+homepage = "https://github.com/katalyxbio/fritillaria"
+repository = "https://github.com/katalyxbio/fritillaria"
+documentation = "https://docs.rs/fritillaria-vcf"
+categories = ["parser-implementations", "science::bioinformatics"]
+
+[features]
+async = [
+  "dep:futures",
+  "dep:pin-project-lite",
+  "dep:tokio",
+  "fritillaria-bgzf/async",
+  "fritillaria-csi/async",
+  "fritillaria-tabix/async",
+]
+
+[dependencies]
+indexmap.workspace = true
+memchr.workspace = true
+fritillaria-bgzf = { path = "../fritillaria-bgzf", version = "0.51.0" }
+fritillaria-core = { path = "../fritillaria-core", version = "0.20.0" }
+fritillaria-csi = { path = "../fritillaria-csi", version = "0.61.0" }
+fritillaria-tabix = { path = "../fritillaria-tabix", version = "0.67.0" }
+percent-encoding.workspace = true
+
+futures = { workspace = true, optional = true, features = ["std"] }
+pin-project-lite = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true, features = ["io-util"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["fs", "io-std", "macros", "rt-multi-thread"] }
+
+[lints.rust]
+missing_docs = "warn"
+
+[package.metadata.docs.rs]
+features = ["async"]
+
+[[example]]
+name = "vcf_count_async"
+required-features = ["async"]
+
+[[example]]
+name = "vcf_query_async"
+required-features = ["async"]
+
+[[example]]
+name = "vcf_read_header_async"
+required-features = ["async"]
+
+[[example]]
+name = "vcf_reheader_async"
+required-features = ["async"]
+
+[[example]]
+name = "vcf_view_async"
+required-features = ["async"]
+
+[[example]]
+name = "vcf_write_async"
+required-features = ["async"]

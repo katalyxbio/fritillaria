@@ -1,24 +1,67 @@
 [package]
 name = "fritillaria-bcf"
-description = "BCF header parsing, record boundary discovery, and typed-value decoding."
-version.workspace = true
+description = "BCF: reader, writer, and the speculative record boundary scan."
+# Carries the vendored noodles-bcf version; see the root manifest.
+version = "0.91.0"
 edition.workspace = true
 rust-version.workspace = true
-license.workspace = true
+# Mixed: `io`/`fs`/`record`/`async` are vendored from noodles-bcf, `columnar`
+# is ours. See VENDORED.md.
+license = "Apache-2.0 AND MIT"
 repository.workspace = true
+
+[features]
+async = [
+  "dep:futures",
+  "dep:pin-project-lite",
+  "dep:tokio",
+  "fritillaria-bgzf/async",
+  "fritillaria-csi/async",
+  "fritillaria-vcf/async",
+]
 
 [dependencies]
 fritillaria-core.workspace = true
 
+# Vendored path.
+indexmap.workspace = true
+memchr.workspace = true
+fritillaria-bgzf.workspace = true
+fritillaria-csi.workspace = true
+fritillaria-vcf.workspace = true
+
+futures = { workspace = true, optional = true, features = ["std"] }
+pin-project-lite = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true, features = ["io-util"] }
+
 [dev-dependencies]
 # Needed to decompress the committed bcftools fixtures in tests/bcftools.rs.
 fritillaria-bgzf = { workspace = true, features = ["testing"] }
-# A third oracle for the dictionary, which is the part of the header with the
-# most room to be self-consistently wrong: noodles builds the same two maps
-# from the same text, independently. bcftools is the ground truth; this catches
-# the case where we and bcftools happen to agree by construction.
-# Dev-only -- the library depends on nothing but fritillaria-core.
-noodles-vcf.workspace = true
+tokio = { workspace = true, features = [
+  "fs",
+  "io-std",
+  "macros",
+  "rt-multi-thread",
+] }
 
 [lints]
 workspace = true
+
+[package.metadata.docs.rs]
+features = ["async"]
+
+[[example]]
+name = "bcf_count_async"
+required-features = ["async"]
+
+[[example]]
+name = "bcf_query_async"
+required-features = ["async"]
+
+[[example]]
+name = "bcf_read_header_async"
+required-features = ["async"]
+
+[[example]]
+name = "bcf_view_async"
+required-features = ["async"]
