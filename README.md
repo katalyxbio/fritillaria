@@ -269,9 +269,9 @@ Our own code is under the [Apache License 2.0](LICENSE).
 
 **Most of this repository is derived from [noodles](https://github.com/zaeleus/noodles) and is
 MIT-licensed, © 2018 Michael Macias.** The notice is in
-[`LICENSE-MIT-noodles.txt`](LICENSE-MIT-noodles.txt), at the root and again in each crate that
-carries vendored code. [VENDORED.md](VENDORED.md) records the upstream commit and the
-vendored/ours split per crate.
+[`third-party-licenses/noodles-MIT.txt`](third-party-licenses/noodles-MIT.txt), and again in each
+crate that carries vendored code, so it ships with every published crate.
+[VENDORED.md](VENDORED.md) records the upstream commit and the vendored/ours split per crate.
 
 | | Licence |
 |---|---|

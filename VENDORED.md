@@ -1,9 +1,10 @@
 # Vendored code
 
 Most of this workspace is **derived from [noodles]**, by Michael Macias, and is
-used under the MIT licence. The full notice is in `LICENSE-MIT-noodles.txt`, at
-the repository root and again in every crate that contains vendored code, so it
-travels with the source.
+used under the MIT licence. The full notice is in
+`third-party-licenses/noodles-MIT.txt`, and again — as `LICENSE-MIT-noodles.txt`
+— in every crate that contains vendored code, so it travels with the source and
+with each published crate.
 
 - **Upstream:** <https://github.com/zaeleus/noodles>
 - **Commit:** `d1ad3992abfbd93996b5b72f37d493af7dee9e72`
@@ -14,10 +15,17 @@ Renaming is permitted; stripping attribution is not.
 
 **What counts as attribution, and what does not.** The MIT licence requires the
 copyright notice and the permission notice to travel with the code. Those are
-`LICENSE-MIT-noodles.txt` — at the root and in every crate carrying vendored
-code — together with the `authors` field, which still names Michael Macias on
-all thirteen crates and **must keep doing so**. This file records the derivation
-and is the third leg.
+the notice file — `third-party-licenses/noodles-MIT.txt`, and a copy in every
+crate carrying vendored code — together with the `authors` field, which still
+names Michael Macias on all thirteen crates and **must keep doing so**. This
+file records the derivation and is the third leg.
+
+**The notice moved out of the root on 2026-09-10, and only its path changed.**
+GitHub detects a repository's licence by scanning root-level `LICENSE*` files,
+so a second one there rendered as a second licence tab and read as though the
+project were dual-licensed at your option — which it is not. The per-crate
+copies are untouched and are what ships to crates.io; nothing about the
+obligation changed, and the file must not be deleted or emptied.
 
 `homepage` and `repository` are **not** attribution. They said
 `zaeleus/noodles` until 2026-09-10 and now say `katalyxbio/fritillaria`, because
