@@ -508,6 +508,64 @@ thing being measured**, and each was findable without a GPU. The sentinel and
 teardown discipline held every time — no false pass, no leaked VM — but that only
 bounds the damage, it does not prevent it.
 
+## Where the time goes, 2026-09-10 — and it is nvCOMP, not us
+
+The question the baseline raised, answered. `CompressTimings` over 16,449 blocks
+in 5 batches on an L4, synchronised between phases so the sum exceeds wall clock:
+
+| phase | time | share |
+|---|---|---|
+| **compress kernel** | **9.493s** | **96.0%** |
+| download stream | 0.218s | 2.2% |
+| upload descriptors | 0.154s | 1.6% |
+| crc32 kernel | 0.015s | 0.1% |
+| frame kernel | 0.005s | 0.1% |
+| upload framing | 0.002s | 0.0% |
+| download sizes | 0.001s | 0.0% |
+| frame plan (host) | 0.000s | 0.0% |
+| plan (host) | 0.000s | 0.0% |
+| allocate | 0.000s | 0.0% |
+| sum | 9.887s | |
+
+**96% is nvCOMP's kernel. Everything this project built around it is 4%.** So
+"the GPU is slower at compression than `bgzip -@11`" is now a diagnosis and not
+just an observation: **there is nothing on our side to fix.** The gap is
+nvCOMP's deflate implementation at the high-ratio rungs, and closing it would
+mean writing a better DEFLATE compressor than NVIDIA's — which is exactly the
+work *Decisions made* rules out on the read side, for the same reasons.
+
+Three things worth keeping from the breakdown:
+
+- **The framing pass costs 0.1%.** It was the design's most conspicuous extra —
+  the compaction the read path does not need, forced by an output alignment of 8
+  — and it is 5 milliseconds. The worry that it might eat the benefit was
+  unfounded, and now measured rather than argued.
+- **The mid-batch synchronise costs 0.001s.** Documented as "unavoidable but
+  small"; it is 0.0%. The `8 * n` download really is a record-count-scaled
+  transfer rather than a data-scaled one, as claimed.
+- **`allocate` is 0.000s, which refuted a live hypothesis.** Before this ran, the
+  leading suspect for a stalled run was per-batch scratch reallocation —
+  4.83 GB allocated and zeroed per batch at `MaxRatio`. Arithmetic already made
+  it doubtful (~0.7s of memset per sweep row); the device made it zero. **A
+  suspect that survives reasoning can still be wrong, and the cheapest way to
+  find out was to measure rather than to fix it.**
+
+### What it cost to get, and one thing still unexplained
+
+This is the seventh L4 run of the compression work and the fourth to fail. It
+produced the breakdown above and then died with `CUDA_ERROR_OUT_OF_MEMORY` in
+the ladder: at `MaxRatio` a 4096-chunk batch wants 4.83 GB of scratch, and with
+10 GiB of staged payload resident and two stages allocating in sequence a 23 GiB
+card could not hold it. The bounded stages now use 1024 chunks (1.21 GB), which
+measured within 0.5% of 4096.
+
+**The 34-minute stall in the previous run remains unexplained.** The synchronise
+regression found while investigating it was real and is fixed — the untimed path
+no longer pays a stream synchronise per phase — but this run shows the timed path
+managing 1 GiB in 9.9s, which does not obviously extrapolate to a half-hour
+stall. Recorded as unexplained rather than attributed to the nearest available
+defect.
+
 ## What is still unmeasured
 
 Two of the three questions this section opened with are now answered on hardware
@@ -527,14 +585,16 @@ The batch-split seam is now driven at both ends: the writer's tests force one
 chunk per batch over a 13-block fixture, and `bench_compress` drives 166,218
 chunks across 41–650 batches on the real WGS file.
 
-What remains unmeasured, and it is the question the baseline raises: **whether
-the compression kernel is slow for a reason we could fix.** 108 MiB/s at rung 5
-against `libdeflate`'s 355 MiB/s across 11 cores is a wide gap, and nothing here
-attributes it — no phase breakdown of the compression path exists, so it is not
-known how much is nvCOMP's kernel, the framing pass, the mid-batch synchronise,
-or the per-batch allocations. That attribution is the obvious next measurement,
-and until it exists "the GPU is slower at compression" is an observation rather
-than a diagnosis.
+~~Whether the compression kernel is slow for a reason we could fix.~~ Measured:
+**96% of it is nvCOMP's kernel and 4% is everything we wrote**, so there is no
+fix on our side. See above.
+
+What is genuinely open is a scope question rather than a measurement: whether to
+keep a GPU write path at all given it is 3.3x slower than `bgzip -@11` at
+comparable output. The case for keeping it is device residency and a single
+dependency for tools that are already on the GPU; the case against is that
+`bgzip` plus a D2H is simply faster today. Nothing in this document settles it,
+and it should be settled deliberately rather than by inertia.
 
 ## The API, transcribed
 

@@ -268,9 +268,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// Chunks per batch for the two bounded stages.
     ///
     /// Fixed rather than taken from the sweep's winner, because the sweep now
-    /// runs *after* them. 4096 won it on both previous runs and the difference
-    /// from 1024 was under 1%.
-    const DEFAULT_CHUNKS: usize = 4096;
+    /// runs *after* them.
+    ///
+    /// **1024 rather than 4096, because 4096 ran the card out of memory.** At
+    /// `MaxRatio` a 4096-chunk batch wants 4.83 GB of nvCOMP scratch; with
+    /// 10 GiB of staged payload resident and two stages allocating in sequence,
+    /// a 23 GiB L4 could not hold it. 1024 wants 1.21 GB and measured within
+    /// 0.5% of 4096 on the sweep, so the headroom is free.
+    const DEFAULT_CHUNKS: usize = 1024;
 
     let mut args = std::env::args().skip(1);
     let Some(path) = args.next() else {
