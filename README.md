@@ -11,6 +11,9 @@ alignment — variant calling, QC and general pipeline I/O are the same problem,
 format coverage matters as much as anything else. A GPU tool that meets an unsupported format
 has to fall back to the CPU and round-trip its data, losing the benefit entirely.
 
+<img src="resources/fritillaria_logo.jpg" width="100%"
+     alt="fritillaria — a botanical painting of a crown imperial (Fritillaria imperialis), its orange-red flowers hanging beneath a green crown of leaves">
+
 **This is about where the data lives, not about a faster decompressor.** If what you want is
 bytes in host memory, htslib already does that well and this project does not claim to beat it;
 see [Two different questions](#two-different-questions).
