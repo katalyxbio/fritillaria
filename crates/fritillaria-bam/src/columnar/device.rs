@@ -9,7 +9,7 @@
 //! Every column is a [`DeviceBuffer`], core's opaque owning handle. This crate
 //! can hold, move and drop one without depending on any GPU crate; only
 //! `fritillaria-cuda` can recover the pointer behind it. That is what keeps
-//! CLAUDE.md's rule true — device memory and streams live in one crate — while
+//! the workspace rule true — device memory and streams live in one crate — while
 //! still letting a format crate hand back device-resident columns.
 //!
 //! # Layout

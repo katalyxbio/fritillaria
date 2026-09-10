@@ -2,7 +2,7 @@
 //!
 //! The oracle chain reaches htslib: `fritillaria-fasta/tests/faidx.rs` checks
 //! the host path against a `.fai` that `samtools faidx` wrote and against
-//! noodles' own reader, and this checks the device against that host path.
+//! the vendored reader, and this checks the device against that host path.
 //!
 //! Needs a real device, so these **skip** rather than fail when none is
 //! present. `scripts/colab_job.py` treats a skip on a GPU VM as a failure.

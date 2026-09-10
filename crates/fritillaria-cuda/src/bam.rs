@@ -13,7 +13,7 @@
 //! # Why this lives here rather than in `fritillaria-bam`
 //!
 //! Launching a kernel means naming a context, a stream and a pointer, and
-//! CLAUDE.md's rule is that those live in this crate and nowhere else. So the
+//! the workspace rule is that those live in this crate and nowhere else. So the
 //! dependency points this way: `fritillaria-cuda` knows about BAM, and
 //! `fritillaria-bam` stays free of any GPU crate, holding its columns as
 //! opaque [`DeviceBuffer`](fritillaria_core::DeviceBuffer)s.

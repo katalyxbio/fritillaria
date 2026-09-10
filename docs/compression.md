@@ -423,7 +423,7 @@ Confirmed by mutation, and the third is the one that matters:
 | the EOF block is not written | 8 of 13 |
 | `chunks_per_batch` ignored | **only the batch-count assertion** |
 
-That third row is the whole reason the counter exists. CLAUDE.md records a
+That third row is the whole reason the counter exists. This project has spent a
 rented VM spent on the same shape of mistake — a test asserting several batches
 over a fixture that arrived in one — and this is that lesson applied before the
 fact rather than after.
@@ -603,8 +603,8 @@ writing. `select_compressor` now mirrors it, with one deliberate asymmetry.
 | `select_codec` (read) | **GPU** | nvCOMP inflates 5.5x faster than our kernel and beats the host |
 | `select_compressor` (write) | **CPU** | nvCOMP compresses 3.3x slower than `bgzip -c -@11` at comparable output |
 
-CLAUDE.md names the failure mode this library is designed against: *a user
-reaching for this expecting acceleration and silently getting CPU speed.* On the
+The failure mode this library is designed against is *a user reaching for this
+expecting acceleration and silently getting CPU speed.* On the
 write path that inverts — a user could reach for the GPU and get something
 **slower than the CPU they came from** — and the same rule applies, so `Auto`
 does not choose it for them. Asking for `Backend::Nvcomp` is an explicit act.

@@ -1,15 +1,16 @@
 [package]
 name = "fritillaria-fastq"
 version = "0.23.0"
+# The authorship below is upstream's, and stays.
 authors = ["Michael Macias <zaeleus@gmail.com>"]
 # Mixed: `io`/`fai`/`fs`/`record`/`async` are vendored from noodles-fastq,
 # `columnar` is ours. See VENDORED.md.
 license = "Apache-2.0 AND MIT"
 edition.workspace = true
 rust-version.workspace = true
-description = "FASTQ format reader and writer"
-homepage = "https://github.com/zaeleus/noodles"
-repository = "https://github.com/zaeleus/noodles"
+description = "FASTQ: reader, writer, and device-resident columnar decoding."
+homepage = "https://github.com/katalyxbio/fritillaria"
+repository = "https://github.com/katalyxbio/fritillaria"
 documentation = "https://docs.rs/fritillaria-fastq"
 categories = ["parser-implementations", "science::bioinformatics"]
 

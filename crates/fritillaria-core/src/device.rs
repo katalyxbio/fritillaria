@@ -13,7 +13,7 @@
 //! pointer requires [`DeviceAlloc::as_any`] and a downcast, which only
 //! `fritillaria-cuda` has any reason to do.
 //!
-//! That is what keeps the rule in CLAUDE.md true — device memory and stream
+//! That is what keeps the workspace's load-bearing rule true — device memory and stream
 //! management live in one crate — while still letting `fritillaria-bam` hand a
 //! caller device-resident columns.
 //!

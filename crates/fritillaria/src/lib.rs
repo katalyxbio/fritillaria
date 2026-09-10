@@ -1,8 +1,12 @@
 //! GPU-accelerated compression and parsing of gzipped genomic files.
 //!
-//! The facade over the workspace. See CLAUDE.md for the architecture; the short
-//! version is that BGZF is a sequence of *independent* gzip members, which is
-//! what makes block-parallel decompression possible.
+//! The facade over the workspace. See the repository README for the
+//! architecture; the short version is that BGZF is a sequence of *independent*
+//! gzip members, which is what makes block-parallel decompression possible.
+//!
+//! The goal is **where the data ends up**, not a faster decompressor: records
+//! land parsed and columnar in device memory, so the decompressed form never
+//! crosses PCIe and the host never has to hold it.
 //!
 //! # Which inputs get the fast path
 //!
@@ -64,14 +68,15 @@
 //!
 //! | | `Auto` picks | why |
 //! |---|---|---|
-//! | [`select_codec`] (read) | **GPU** | nvCOMP inflates 5.5x faster than our kernel and beats the host |
-//! | [`select_compressor`] (write) | **CPU** | nvCOMP compresses **3.3x slower** than `bgzip -c -@11` at comparable output |
+//! | [`select_codec`] (read) | **GPU** | keeps output device-resident, which is the point |
+//! | [`select_compressor`] (write) | **CPU** | GPU compression is slower than multithreaded `bgzip` at comparable output |
 //!
 //! Measured, not assumed — `docs/compression.md` has the numbers and the phase
-//! breakdown showing 96% of the write-side cost is nvCOMP's own kernel. This
-//! library is built against the failure mode of *silently getting CPU speed
-//! when you expected acceleration*; on the write path that inverts into
-//! *silently getting something slower than the CPU*, and the same rule applies.
+//! breakdown showing 96% of the write-side cost is nvCOMP's own kernel, so
+//! there is nothing on this side to fix. This library is built against the
+//! failure mode of *silently getting CPU speed when you expected acceleration*;
+//! on the write path that inverts into *silently getting something slower than
+//! the CPU*, and the same rule applies.
 //!
 //! **The GPU write path is still the right choice when the records are already
 //! in device memory**, because then the CPU alternative owes a device-to-host
@@ -241,7 +246,7 @@ pub fn select_codec(backend: Backend) -> Result<(Box<dyn BlockCodec>, Backend)> 
         Backend::Nvcomp => Ok((nvcomp_codec()?, Backend::Nvcomp)),
         // nvCOMP first: it is the faster of the two GPU codecs and the one an
         // adopter expects to see. Ours is the portable fallback for machines
-        // that do not have it. See CLAUDE.md, *Decisions made*.
+        // that do not have it.
         Backend::Auto => {
             if let Ok(codec) = nvcomp_codec() {
                 return Ok((codec, Backend::Nvcomp));
@@ -280,7 +285,7 @@ fn nvcomp_compressor() -> Result<Box<dyn BlockCompressor>> {
 /// kernel, so it is not something this crate can fix. See
 /// `docs/compression.md`.
 ///
-/// CLAUDE.md states the failure mode this library is designed against: *a user
+/// The failure mode this library is designed against is *a user
 /// reaching for this expecting acceleration and silently getting CPU speed.*
 /// On the write path that inverts — a user could reach for the GPU and get
 /// something **slower than the CPU they came from** — and the same rule applies.

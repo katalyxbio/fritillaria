@@ -5,7 +5,7 @@
 #
 # Provisions a VM, uploads the source, runs the device tests, and stops the VM
 # on every exit path including failure and Ctrl-C. A held session bills for
-# idle wall-clock time, so nothing here is left running (see CLAUDE.md).
+# idle wall-clock time, so nothing here is left running.
 #
 # `colab run` cannot be used directly: it provisions a bare VM with no way to
 # get local files onto it first. Hence new + upload + exec + stop, with the

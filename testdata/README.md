@@ -300,8 +300,8 @@ bcftools annotate -x INFO/platforms testdata/giab_hg002.bcf \
 ## FASTQ fixtures
 
 Generated from the BAM fixtures already here, so the reads are real and the
-container is htslib's rather than our own writer's — the circularity rule in
-CLAUDE.md applies to FASTQ too.
+container is htslib's rather than our own writer's — the rule against circular
+fixtures applies to FASTQ too.
 
 ```bash
 samtools fastq -0 testdata/ont_ultralong.fastq.gz  testdata/ont_ultralong.bam

@@ -20,7 +20,7 @@
 //! It also means a record larger than a batch resolves itself. Each round
 //! prepends the carried blocks and appends a fresh read, so the window grows
 //! until the record fits. That is the "must grow its buffer to fit a whole
-//! record" rule from CLAUDE.md, and it is handled here rather than left to
+//! record" rule, and it is handled here rather than left to
 //! every caller.
 //!
 //! # Ownership: why batches are handed over rather than lent

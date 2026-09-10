@@ -1,13 +1,15 @@
 [package]
 name = "fritillaria-gff"
 version = "0.62.0"
+# Vendored unchanged from `noodles-gff`; the authorship below is upstream's and
+# stays. See VENDORED.md.
 authors = ["Michael Macias <zaeleus@gmail.com>"]
 license = "MIT"
 edition.workspace = true
 rust-version.workspace = true
 description = "Generic Feature Format (GFF) reader and writer"
-homepage = "https://github.com/zaeleus/noodles"
-repository = "https://github.com/zaeleus/noodles"
+homepage = "https://github.com/katalyxbio/fritillaria"
+repository = "https://github.com/katalyxbio/fritillaria"
 documentation = "https://docs.rs/fritillaria-gff"
 categories = ["parser-implementations", "science::bioinformatics"]
 

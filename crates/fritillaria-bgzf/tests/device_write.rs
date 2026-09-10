@@ -4,8 +4,8 @@
 //!
 //! Everything the writer adds over the compressor is host logic: where a batch
 //! splits, that a split does not move a block boundary, that the counters track,
-//! that the EOF block lands. None of it needs a kernel — and CLAUDE.md records a
-//! rented VM burned on exactly this class of mistake, when a test asserted
+//! that the EOF block lands. None of it needs a kernel — and this project has burned a
+//! rented VM on exactly this class of mistake, when a test asserted
 //! several batches and the fixture arrived in one. So `HostDeviceCompressor`
 //! stands in and the whole loop is exercised locally.
 //!

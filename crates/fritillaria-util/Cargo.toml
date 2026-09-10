@@ -1,13 +1,15 @@
 [package]
 name = "fritillaria-util"
 version = "0.85.0"
+# Vendored unchanged from `noodles-util`; the authorship below is upstream's and
+# stays. See VENDORED.md.
 authors = ["Michael Macias <zaeleus@gmail.com>"]
 license = "MIT"
 edition.workspace = true
 rust-version.workspace = true
-description = "noodles support utilities"
-homepage = "https://github.com/zaeleus/noodles"
-repository = "https://github.com/zaeleus/noodles"
+description = "Format sniffing and generic alignment and variant readers and writers"
+homepage = "https://github.com/katalyxbio/fritillaria"
+repository = "https://github.com/katalyxbio/fritillaria"
 documentation = "https://docs.rs/fritillaria-util"
 categories = ["science::bioinformatics"]
 

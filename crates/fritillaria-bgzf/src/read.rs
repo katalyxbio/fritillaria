@@ -12,11 +12,14 @@
 //!
 //! # Interop
 //!
-//! With the `noodles` feature this implements `fritillaria_bgzf::io::Read` and
-//! `BufRead`, which is the seam every noodles format crate is generic over. A
+//! This implements [`crate::io::Read`] and [`crate::io::BufRead`], which is the
+//! seam every format crate in the workspace is generic over. A
 //! `fritillaria_bam::io::Reader` built on top of this decompresses on the GPU
-//! while noodles does the record parsing — and the same holds for BCF,
-//! `bgzip`ped VCF, and anything tabix-indexed.
+//! while the vendored CPU parser does the record decoding — and the same holds
+//! for BCF, `bgzip`ped VCF, and anything tabix-indexed.
+//!
+//! Those traits live in this crate rather than a separate one, so the drop-in
+//! property is not behind a feature flag.
 
 use std::io::{self, BufRead, Read, Seek, SeekFrom};
 

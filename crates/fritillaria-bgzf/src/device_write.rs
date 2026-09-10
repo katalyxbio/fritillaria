@@ -216,7 +216,7 @@ impl<W: Write, C: DeviceBlockCompressor> DeviceBgzfWriter<W, C> {
     /// Exposed for diagnostics, and because without it the claim that batching
     /// does not change the output is untestable: a writer that quietly ignored
     /// [`with_chunks_per_batch`](Self::with_chunks_per_batch) would satisfy that
-    /// claim vacuously. CLAUDE.md records a rented VM spent on the same shape of
+    /// claim vacuously. This project has spent a rented VM on the same shape of
     /// mistake — a test asserting several batches over a fixture that arrived in
     /// one.
     #[must_use]

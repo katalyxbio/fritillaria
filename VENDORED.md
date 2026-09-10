@@ -10,9 +10,21 @@ travels with the source.
 - **Vendored:** 2026-09-09
 - **Extent:** all 18 crates, 137,508 lines
 
-Renaming is permitted; stripping attribution is not. The `authors`, `homepage`
-and `repository` fields of every vendored crate still point at noodles, and this
-file records the derivation. Do not remove either.
+Renaming is permitted; stripping attribution is not.
+
+**What counts as attribution, and what does not.** The MIT licence requires the
+copyright notice and the permission notice to travel with the code. Those are
+`LICENSE-MIT-noodles.txt` — at the root and in every crate carrying vendored
+code — together with the `authors` field, which still names Michael Macias on
+all thirteen crates and **must keep doing so**. This file records the derivation
+and is the third leg.
+
+`homepage` and `repository` are **not** attribution. They said
+`zaeleus/noodles` until 2026-09-10 and now say `katalyxbio/fritillaria`, because
+a published crate whose repository link points at a different project sends bug
+reports to a maintainer who cannot act on them and misstates where this code
+actually lives. Each vendored manifest carries a comment naming the upstream
+crate it came from, so the provenance is still readable from the manifest alone.
 
 ## What changed
 

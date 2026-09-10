@@ -25,16 +25,18 @@ fn fixture(name: &str) -> PathBuf {
         .join(name)
 }
 
-/// Opens an htslib-written BAM through our reader, wrapped in noodles' parser.
+/// Opens an htslib-written BAM through our reader, wrapped in the vendored parser.
 fn open(name: &str) -> bam::io::Reader<BgzfReader<std::fs::File>> {
     let file = std::fs::File::open(fixture(name)).expect("fixture missing");
     bam::io::Reader::from(BgzfReader::new(file))
 }
 
 #[test]
-fn noodles_reads_a_header_through_our_decompression() {
+fn the_vendored_reader_reads_a_header_through_our_decompression() {
     let mut reader = open("htslib.bam");
-    let header = reader.read_header().expect("noodles must parse the header");
+    let header = reader
+        .read_header()
+        .expect("the vendored reader must parse the header");
 
     // Ground truth from `samtools view -H`.
     let refs = header.reference_sequences();
@@ -44,18 +46,18 @@ fn noodles_reads_a_header_through_our_decompression() {
 }
 
 #[test]
-fn noodles_reads_records_through_our_decompression() {
+fn the_vendored_reader_reads_records_through_our_decompression() {
     let mut reader = open("htslib.bam");
     let _header = reader.read_header().unwrap();
 
     let records: Vec<_> = reader
         .records()
         .collect::<std::io::Result<Vec<_>>>()
-        .expect("noodles must decode every record");
+        .expect("the vendored reader must decode every record");
 
     assert_eq!(records.len(), 8, "samtools view -c reports 8 records");
 
-    // BAM positions are 0-based; noodles' Position is 1-based, matching SAM.
+    // BAM positions are 0-based; the vendored `Position` is 1-based, matching SAM.
     let first = &records[0];
     assert_eq!(
         first.alignment_start().unwrap().unwrap().get(),
@@ -73,7 +75,7 @@ fn noodles_reads_records_through_our_decompression() {
 }
 
 #[test]
-fn noodles_reads_records_spanning_block_and_batch_boundaries() {
+fn the_vendored_reader_reads_records_spanning_block_and_batch_boundaries() {
     // 4000 records over 15 BGZF blocks, read with a batch size of one block so
     // the reader must also stitch across batches. Both seams at once.
     let file = std::fs::File::open(fixture("htslib_multiblock.bam")).unwrap();

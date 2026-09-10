@@ -88,7 +88,7 @@ impl DeviceBlockCodec for HostDeviceCodec {
 /// reason than symmetry. The batching loop in
 /// [`DeviceBgzfWriter`](crate::DeviceBgzfWriter) — how a chunk list is split
 /// across batches, where a batch boundary lands, what happens at the seam — is
-/// pure host logic with no kernel in it. CLAUDE.md records a GPU run wasted on
+/// pure host logic with no kernel in it. This project has wasted a GPU run on
 /// exactly that class of mistake: a test asserted several batches and the
 /// fixture arrived in one, which cost a rented VM to discover and a second to
 /// confirm. This makes that a local second.

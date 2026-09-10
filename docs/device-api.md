@@ -8,7 +8,8 @@ context and stream, exposing a completion event for cross-stream ordering; `Nvco
 implements the same two traits over NVIDIA's library, dlopened at runtime. **Verified on a Tesla
 T4**: 43 device tests, asserting byte-identity against the CPU reference, that output lands in
 the caller's own context, and that our kernel and nvCOMP agree with each other on a real htslib
-BAM. Steps 5-6 are still proposal.
+BAM. `DeviceBgzfReader` (step 5) and the columnar device decode (step 6) followed, each verified
+on a T4 in turn; the per-step notes below record what each one found.
 
 Two things changed while implementing, both recorded below: `DeviceInflateBatch::data()` returns
 `Option<&DeviceBuffer>` because an empty batch genuinely owns no allocation, and a backend fills

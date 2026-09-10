@@ -8,7 +8,7 @@
 //! the *bytes* checkable on a machine with no GPU, which is where all host-side
 //! development on this project happens.
 //!
-//! The rule this serves is one CLAUDE.md records having learned the hard way:
+//! The rule this serves is one this project learned the hard way:
 //! **before renting a VM, run every part of the test that does not need the
 //! device.** A remote run should be finding out whether the GPU agrees, not
 //! whether the header layout is right.

@@ -3,7 +3,7 @@
 //! Kernels ship as `.cu` **source** and are compiled by NVRTC on whichever
 //! machine has the GPU. Nothing here requires `nvcc` at build time, so the
 //! whole workspace builds on a machine with no CUDA toolkit — which is the
-//! normal development case for this project (see CLAUDE.md).
+//! normal development case for this project.
 //!
 //! # Feature gate
 //!
@@ -31,7 +31,7 @@
 //! [`CudaCodec`] runs our own inflate kernel; [`NvcompCodec`] runs NVIDIA's.
 //! They implement the same two traits with the same mandatory verification, so
 //! choosing between them is a performance decision. nvCOMP is the intended fast
-//! path and ours is the portable fallback — see [`nvcomp`] and CLAUDE.md.
+//! path and ours is the portable fallback — see [`nvcomp`].
 
 #[cfg(feature = "cuda")]
 mod backend;

@@ -7,8 +7,8 @@
 //! Decompression Engine. Closing that gap ourselves is not a good use of
 //! effort, and NVIDIA's own library is what an adopter expects to see. So
 //! nvCOMP is the intended fast path and `kernels/inflate.cu` is the portable
-//! fallback and a second differential-test oracle. See CLAUDE.md,
-//! *Decisions made*.
+//! fallback and a second differential-test oracle. See the README,
+//! *Two GPU codecs, and why both*.
 //!
 //! # How it maps onto BGZF
 //!

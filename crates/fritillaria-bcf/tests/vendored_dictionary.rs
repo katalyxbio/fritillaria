@@ -5,10 +5,11 @@
 //! value. This catches a narrower and nastier case: numbering that happens to
 //! agree with ours on the keys the fixtures use, and diverges elsewhere.
 //!
-//! noodles builds the same two maps from the same header text and calls them
-//! `StringMaps`. It was written from the spec by someone else, so agreement
-//! between it, bcftools and this crate is three implementations rather than
-//! two — the same standard the CUDA codecs are held to.
+//! The vendored `fritillaria-vcf` builds the same two maps from the same header
+//! text and calls them `StringMaps`. It was written from the spec by someone
+//! else — it is noodles' code, not ours — so agreement between it, bcftools and
+//! this crate is three implementations rather than two, the same standard the
+//! CUDA codecs are held to.
 //!
 //! The IDX rules are the reason this is worth a test of its own. `IDX=`
 //! overrides the implicit position, an ID declared as both INFO and FORMAT
@@ -40,15 +41,18 @@ fn inflate(name: &str) -> InflateBatch {
 }
 
 #[test]
-fn our_dictionary_matches_the_one_noodles_builds() {
+fn our_dictionary_matches_the_one_the_vendored_crate_builds() {
     for name in ["kg_phase3.bcf", "giab_hg002.bcf", "giab_hg002_idx_gap.bcf"] {
         let batch = inflate(name);
         let header = parse_header(batch.data()).unwrap();
 
         // Same input text, independently interpreted.
         let text = String::from_utf8(header.text.clone()).expect("VCF headers are ASCII");
-        let parsed: vcf::Header = text.parse().expect("noodles must parse the header text");
-        let maps = StringMaps::try_from(&parsed).expect("noodles must build string maps");
+        let parsed: vcf::Header = text
+            .parse()
+            .expect("the vendored parser must accept the header text");
+        let maps =
+            StringMaps::try_from(&parsed).expect("the vendored parser must build string maps");
 
         // Compared by index in both directions, and past the end of each
         // table: agreeing on the entries we happen to have is weaker than
@@ -72,7 +76,7 @@ fn our_dictionary_matches_the_one_noodles_builds() {
                 }
                 (None, None) => {}
                 _ => panic!(
-                    "{name}: contig {index} — ours {:?}, noodles {theirs:?}",
+                    "{name}: contig {index} — ours {:?}, vendored {theirs:?}",
                     ours.map(String::from_utf8_lossy)
                 ),
             }
@@ -96,7 +100,7 @@ fn our_dictionary_matches_the_one_noodles_builds() {
                 }
                 (None, None) => {}
                 _ => panic!(
-                    "{name}: key {index} — ours {:?}, noodles {theirs:?}",
+                    "{name}: key {index} — ours {:?}, vendored {theirs:?}",
                     ours.map(String::from_utf8_lossy)
                 ),
             }
@@ -169,7 +173,7 @@ fn the_idx_gap_fixture_actually_has_a_gap() {
 }
 
 #[test]
-fn sample_names_match_the_ones_noodles_parses() {
+fn sample_names_match_the_ones_the_vendored_crate_parses() {
     for name in ["kg_phase3.bcf", "giab_hg002.bcf", "giab_hg002_idx_gap.bcf"] {
         let batch = inflate(name);
         let header = parse_header(batch.data()).unwrap();

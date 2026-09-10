@@ -1,14 +1,19 @@
 # fritillaria
 
-**[noodles](https://github.com/zaeleus/noodles) for GPU.** A Rust library for genomic file
-formats that delivers parsed records **into GPU memory**, so GPU-accelerated tools can be built
-on top of it instead of rewriting BGZF, BAM and BCF parsing from scratch.
+A Rust library for genomic file formats that delivers parsed records **into GPU memory**, so
+GPU-accelerated tools can be built on top of it instead of rewriting BGZF, BAM and BCF parsing
+from scratch. Its CPU half is [noodles](https://github.com/zaeleus/noodles), vendored whole, with
+a device-resident path added underneath.
 
 The motivating case: read a BAM straight into device memory to feed a GPU-accelerated tool, so
-the data never crosses PCIe in its decompressed form. Not only alignment — variant calling, QC
-and general pipeline I/O are the same problem, which is why format coverage matters as much as
-speed. A GPU tool that meets an unsupported format has to fall back to the CPU and round-trip
-its data, losing the benefit entirely.
+the data never crosses PCIe in its decompressed form and the host never has to hold it. Not only
+alignment — variant calling, QC and general pipeline I/O are the same problem, which is why
+format coverage matters as much as anything else. A GPU tool that meets an unsupported format
+has to fall back to the CPU and round-trip its data, losing the benefit entirely.
+
+**This is about where the data lives, not about a faster decompressor.** If what you want is
+bytes in host memory, htslib already does that well and this project does not claim to beat it;
+see [Two different questions](#two-different-questions).
 
 ```rust
 use fritillaria::{bgzf::DeviceBgzfReader, cuda::BamDecoder, select_codec, Backend};
@@ -88,65 +93,67 @@ block, so records genuinely span blocks and can exceed a whole batch.
 `testdata/ont_ultralong.bam` carries a 254 KB record crossing three block boundaries, and the
 tests drive the carry-the-partial-record loop a real consumer has to write.
 
-## Performance
+### Writing
 
-Measured over a 3 GiB prefix of a real 1000 Genomes WGS BAM (166,012 blocks, 10.11 GiB inflated,
-3.37x ratio) on an NVIDIA L4. Both GPU codecs in the same run, back to back on the same file.
-Device-resident, so `download` is just the per-block verification arrays rather than the payload.
+Both write paths ship, and `Auto` resolves them **differently from the read path** on purpose:
 
-| Phase | our kernel | nvCOMP |
+| | `Auto` picks | why |
 |---|---|---|
-| upload H2D | 0.86s | 0.89s |
-| **inflate + CRC32** | 4.68s | **0.86s** |
-| download D2H | 0.003s | 0.003s |
-| **sum of phases** | 5.55s | **1.75s** |
+| `select_codec` (read) | **GPU** | keeps the output device-resident, which is the point |
+| `select_compressor` (write) | **CPU** | GPU compression is slower than multithreaded `bgzip` at comparable output |
 
-**nvCOMP inflates at 11.8 GiB/s of output on an L4** — 5.5x our own kernel, and that includes
-the per-block CRC32. Verification is never skipped on either path: the checksum is compared
-against what the file itself records, which is stronger than trusting a library self-check.
+The failure mode this library is designed against — reaching for it expecting acceleration and
+silently getting CPU speed — inverts on the write side into silently getting something *slower*
+than the CPU. So `Auto` will not choose the GPU for you there. `Backend::Nvcomp` is an explicit
+act, and `Backend::Cuda` is an error rather than a quiet substitution, because our own kernel
+inflates but does not compress.
 
-NVIDIA's nvCOMP is the default fast path; our own inflate kernel is the portable fallback and a
-second test oracle. Keeping output on the device deleted a 7.2s device-to-host copy that had
-been 54% of runtime — removed rather than optimised.
+GPU compression is still the right choice when records are **already in VRAM**, where the CPU
+alternative owes a device-to-host copy of the *uncompressed* data first. That case uses
+`DeviceBgzfWriter` directly. Output is spec-valid BGZF that `samtools` reads; see
+[`docs/compression.md`](docs/compression.md).
 
-### Time to records in device memory
+## What device residency buys
 
-The metric the design is actually argued on. Measured end to end on the same L4 and file: a BAM
-on disk in, **29,887,809 parsed records in device columns** out, through the shipping path.
-Nothing returns to the host but the BAM header.
+A conventional pipeline feeding a GPU does four things: read compressed bytes, decompress them on
+the CPU, upload the result, then parse it. This does the last three on the device, and the
+argument for that is structural rather than a benchmark result.
 
-| Path | Produces | Wall |
-|---|---|---|
-| **fritillaria + nvCOMP** | 29.9M **parsed records**, columnar, in VRAM | **2.81s** |
-| `bgzip -d -@11` | unparsed **bytes** in host RAM | 4.00s |
-| `bgzip -@11` then upload | unparsed bytes in VRAM | 4.00s pipelined / 6.97s sequential |
+**PCIe carries compressed bytes instead of decompressed ones.** The compression ratio becomes an
+effective bandwidth multiplier on the link — real 1000 Genomes WGS compresses **3.37x**, so the
+same link delivers 3.37x the data. This is a property of the file, not of any codec being good.
+It does not go away on better hardware, and it is why the architecture is right even where the
+kernels are not the fastest part.
 
-**About 1.4x on wall clock against a 12-core htslib — while delivering something it has not
-produced at all.** The CPU path ends with raw bytes and still has every record to parse.
+**The host never has to hold the decompressed data.** A 3 GiB BAM prefix inflates to 10.11 GiB;
+on the device-resident path none of that is allocated host-side or copied back. An early version
+did copy it back, and that transfer alone was 54% of runtime — deleted rather than optimised.
 
-Two things the breakdown shows:
+**Records arrive parsed and columnar, which is what the next kernel wants.** The comparison that
+matters is not against a decompressor, because a decompressor hands back bytes and knows nothing
+about a BAM record. nvCOMP does not parse; neither does htslib. The output here is device-side
+columns — positions, flags, MAPQ, sequence and quality offsets — indexable straight from a
+consumer's kernel, in the caller's own CUDA context, so they are usable in someone else's
+pipeline rather than only in ours.
 
-- **Turning bytes into records costs ~7% of the run** — 0.19s against 2.63s of getting the bytes
-  there. Decoding on the device is close to free next to moving the data.
-- **Batch size barely matters** between 256 and 4096 blocks per batch.
-
-The structural point is the durable one: **PCIe carries compressed bytes instead of decompressed
-ones, so the compression ratio becomes an effective bandwidth multiplier on the link** — 3.37x
-fewer bytes on real WGS. That does not depend on any codec being good, and does not go away on
-better hardware. The host never has to hold the 10.11 GiB at all.
+**Verification is never skipped.** Per-block CRC32 and `ISIZE` are checked on device against what
+the file itself records, which is stronger than trusting a library's self-check, and costs
+nothing extra because it rides along with decompression.
 
 ### Two different questions
 
-If you want **bytes in host memory**, use htslib: `bgzip -d -@11` does that in ~3.5s, and
-getting our output back to the host means paying the device-to-host copy this design exists to
-delete. No standalone decompression speedup is claimed anywhere in this project.
+If you want **bytes in host memory**, use htslib. Multithreaded `bgzip -d` is very good at it, and
+getting our output back to the host would mean paying the device-to-host copy this design exists
+to delete. **No standalone decompression speedup is claimed anywhere in this project**, and the
+same holds on the write path, where multithreaded `bgzip` is faster than the GPU at comparable
+output.
 
-If you want **records in device memory**, that is what this is for, and it is the case htslib
-does not address at all.
+If you want **records in device memory**, that is what this is for, and it is a case htslib does
+not address at all.
 
-One caveat on the numbers above: the benchmark VM reports PCIe **gen 1 x16** (~4 GB/s), well
-below a real gen 4 link. Upload dominates the nvCOMP path there, so on faster hardware the
-balance shifts back toward the codec. The 3.37x ratio advantage is invariant.
+Measurements — phase breakdowns, ratio ladders and the htslib baselines behind those statements —
+are in [`docs/`](docs/) rather than here, since they are specific to the hardware they were taken
+on.
 
 ## Status
 
@@ -156,21 +163,24 @@ API at the crate root, ours alongside it — and three are entirely ours.
 | Crate | What works |
 |---|---|
 | `fritillaria-core` | *Ours:* errors, `VirtualOffset`, the `BlockCodec`/`DeviceBlockCodec` seams. *Vendored:* `Position`, `Region` |
-| `fritillaria-bgzf` | *Ours:* block discovery, CPU codec, writer, batched and device-resident readers, indexed seek. *Vendored:* `io`, `gzi` |
+| `fritillaria-bgzf` | *Ours:* block discovery, CPU codec and compressor, batched and device-resident readers and writers, indexed seek. *Vendored:* `io`, `gzi` |
 | `fritillaria-bam` | *Ours* (`columnar`): boundary scan, `RecordBatch`, zero-copy `Record`, aux tags, device columns. *Vendored:* `io`, `bai`, `fs`, `record` |
 | `fritillaria-bcf` | *Ours* (`columnar`): header + dictionaries, boundary scan, BCF2 typed values, device columns. *Vendored:* `io`, `fs`, `record` |
 | `fritillaria-fastq` | *Ours* (`columnar`): validator, boundary scan, device columns. *Vendored:* `io`, `fai`, `fs`, `record` |
 | `fritillaria-fasta` | *Ours* (`columnar`): contig index, newline compaction, `DeviceReference`. *Vendored:* `io`, `fai`, `fs`, `record` |
 | `fritillaria-text` | All ours. One line and field scanner for SAM, VCF, BED, GFF and GTF |
-| `fritillaria-cuda` | All ours. DEFLATE inflate + CRC32 kernels, device-resident output, nvCOMP codec, columnar decode for BAM, BCF and FASTQ, FASTA compaction, text scan |
+| `fritillaria-cuda` | All ours. DEFLATE inflate + CRC32 kernels, device-resident output, nvCOMP codec and compressor, BGZF framing kernel, columnar decode for BAM, BCF and FASTQ, FASTA compaction, text scan |
 | `fritillaria` | Facade: re-exports every format, plus backend selection |
 | `-sam -vcf -csi -tabix -cram -bed -gff -gtf -util -htsget -refget` | Vendored unchanged |
 
-**Verified on real hardware.** 80 device tests pass on an NVIDIA T4 and 2,496 on the host.
-Correctness is established by differential testing throughout: GPU output against a CPU
-reference, our parsers against `samtools`, `bcftools` and the vendored noodles readers, and —
-for nvCOMP — against our own kernel as well, so three independent implementations must agree
-byte for byte on an htslib-written BAM.
+**Verified on real hardware** — the read and decode paths on an NVIDIA T4, the compression path
+on an L4, with the rest of the suite on the host. Correctness rests on differential testing
+throughout: GPU output against a CPU reference, our parsers against `samtools`, `bcftools` and
+the vendored readers, and — for nvCOMP — against our own kernel as well, so three independent
+implementations must agree byte for byte on an htslib-written BAM.
+
+Device tests **skip** rather than fail when no GPU is present, so the remote job treats a skip on
+a GPU machine as a failure. Otherwise "nothing ran" would report as success, which it did once.
 
 Fixtures are real files from real writers: htslib, bcftools, NCBI, UCSC, GIAB. Self-generated
 files prove only self-consistency, so `testdata/` avoids them.
@@ -180,13 +190,19 @@ tabix-driven region query runs on the codec-driven reader rather than falling ba
 
 ## What's next
 
-1. **GPU-side BGZF compression**, so a tool that produces records on-device can write them back
-   without paying the transfer the read path removes. The first step is a measurement rather
-   than a kernel: nvCOMP's Deflate compress ratio against `libdeflate`, since a fast compressor
-   that produced bigger files would undercut the link advantage the design rests on.
-2. **Columnar decode for VCF.gz**, on top of the text scan that already finds its fields.
-3. **2-bit packing for FASTA**, which is what makes a 3.1 Gbp reference sit in 775 MB rather
+1. **Columnar decode for VCF.gz**, on top of the text scan that already finds its fields.
+2. **2-bit packing for FASTA**, which is what makes a 3.1 Gbp reference sit in 775 MB rather
    than 3.1 GB. It needs a companion mask for `N` runs and IUPAC codes.
+3. **A rebase onto a newer noodles.** Vendoring froze the CPU half at one upstream commit, so
+   fixes there do not arrive on their own. The vendored modules are kept byte-for-byte upstream
+   apart from the rename precisely to keep that mechanical; the procedure is in
+   [VENDORED.md](VENDORED.md) and has not been exercised yet.
+
+Known gaps, stated rather than left to be discovered: a plain `.gz` cannot be block-parallel and
+gets a CPU path with no speedup, which the API says explicitly; the text formats get line and
+field framing but no field interpretation on device; and the `CG` long-CIGAR encoding is
+implemented but tested only against hand-built records, because no real file containing one has
+been found yet.
 
 CRAM is not currently planned: it is its own container with its own codecs, so little of this
 stack applies to it.
@@ -231,6 +247,21 @@ back device-resident columns while remaining compilable with no GPU in sight.
 `CudaCodec::with_context` allocates in a **caller-supplied** context, and `ready_event` lets a
 consumer on its own stream order against inflate completion without a host synchronise. A
 library that insisted on owning the context could not be embedded in someone else's pipeline.
+
+### Two GPU codecs, and why both
+
+NVIDIA's **nvCOMP** is the default device path. Decompression is a component to buy rather than a
+race to win: it is NVIDIA's own library and the reference answer for GPU DEFLATE, and a genomics
+tool that hand-rolled a kernel instead would owe every prospective adopter a justification.
+
+Our **own inflate kernel** ships alongside it, and stays for two reasons that are not
+performance. It is the fallback on a machine without nvCOMP, which is proprietary and dlopened
+rather than redistributed. And it is a third differential-test oracle: the CPU reference, our
+kernel and nvCOMP must all agree byte for byte on an htslib-written BAM, which is a stronger
+check than either GPU path alone could give.
+
+Both sit behind the same `BlockCodec`/`DeviceBlockCodec` traits and are subject to the same
+mandatory CRC verification, so neither can drift into skipping a check the other makes.
 
 ## License
 
