@@ -119,33 +119,32 @@ impl fmt::Debug for DeflateCompressOpts {
 /// The `algorithm` field of [`DeflateCompressOpts`], with NVIDIA's own
 /// descriptions from `deflate.h`.
 ///
-/// # Why the default is [`DeflateAlgorithm::HighRatio`], and why that is close
+/// # Why the default is [`DeflateAlgorithm::MaxRatio`]
 ///
 /// nvCOMP defaults to `1`, and NVIDIA Parabricks' `--gpuwrite-deflate-algo`
 /// defaults to `0` — entropy-only. Both optimise for throughput, which is the
 /// right call for a batch aligner whose BAM is often an intermediate. A library
-/// does not get to assume that: the file we write is somebody's archive, and a
-/// size penalty is paid by every future reader of it. `4` is the first rung
-/// NVIDIA documents as beating Zlib level 6, roughly where output size reaches
-/// parity with the libdeflate-level-6 htslib writes.
+/// does not get to assume that: the file we write is somebody's archive.
 ///
-/// **`2` is 13x faster, and whether that is worth taking depends on the data —
-/// which is why this is not settled.** Measured (`docs/compression.md`):
+/// **`5` strictly dominates `4`, measured on four datasets** — better output on
+/// every one, at the same speed (9.49s against 9.55s over 1 GiB, and near
+/// identical scratch). There is no tradeoff to weigh:
 ///
-/// | | `2` vs htslib | `4` vs htslib | `2` throughput | `4` throughput |
-/// |---|---|---|---|---|
-/// | Illumina WGS, 10 GiB | ~4.7% | 3.4% | 1451 MiB/s | 108 MiB/s |
-/// | PacBio HiFi fixture | **+17.9%** | +5.4% | *not measured* | *not measured* |
+/// | rung | WGS | HiFi | ONT | BCF | MiB/s |
+/// |---|---|---|---|---|---|
+/// | 2 | 3.18x | +17.9% | +8.0% | +23.7% | **1421** |
+/// | 4 | 3.22x | +5.4% | +0.8% | +2.5% | 107 |
+/// | **5** | **3.40x** | **+1.1%** | **+0.7%** | **−40.0%** | 108 |
 ///
-/// On short-read WGS the two rungs are 1.3 points apart and `2` is the obvious
-/// choice. On HiFi they are **12.5 points apart**, and long-read uBAM is a
-/// primary input for this library, not an edge case. One dataset is not enough
-/// to move a default that decides how large everybody's files are — so `4`
-/// stays, and the level stays caller-visible for anyone who knows their data
-/// and would rather have the 13x.
+/// (Percentages are against the htslib bytes that came in; WGS is a ratio
+/// because that file is the benchmark's own.)
 ///
-/// The unmeasured cell is the one that decides it: throughput per rung on
-/// long-read data. Until that exists, treat the choice as open.
+/// **The cliff is between `2` and `4`, and it is where this stops being a
+/// throughput win.** `bgzip -c -@11` on the same machine does 355 MiB/s at
+/// 3.38x, so `4` and `5` are **~3.3x slower than multithreaded htslib** at
+/// comparable output, while `2` is 4x faster and 5.9% larger. Choosing `5` is
+/// choosing the best files this codec can produce, not the fastest write — see
+/// `docs/compression.md`, which says so plainly rather than quoting a speedup.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[repr(i32)]
 pub enum DeflateAlgorithm {
@@ -155,15 +154,19 @@ pub enum DeflateAlgorithm {
     LowRatio = 1,
     /// Medium; documented as beating Zlib level 1.
     ///
-    /// **13x faster than `HighRatio` and within 1.2% of its ratio on WGS — but
-    /// 12.5 points worse on HiFi.** The strongest candidate to switch to, and
-    /// the reason the choice is still open. See the type's docs.
+    /// **The last fast rung: 13x quicker than `HighRatio`, and the only one at
+    /// which GPU compression beats `bgzip -@11` on wall clock.** Costs 5.9% of
+    /// output on WGS and ~18-24% on HiFi and genotype BCF. The right choice for
+    /// an intermediate, not for an archive.
     MediumRatio = 2,
     /// Lower throughput, higher ratio; documented as beating Zlib level 6.
-    /// Ours, and see the type's docs for why it is not nvCOMP's.
-    #[default]
+    ///
+    /// **Superseded by `MaxRatio`, which measured better output at the same
+    /// speed on every dataset tried.** Kept because it is nvCOMP's own rung, not
+    /// because there is a reason to pick it.
     HighRatio = 4,
-    /// Lowest throughput, highest ratio.
+    /// Lowest throughput, highest ratio — and ours. See the type's docs.
+    #[default]
     MaxRatio = 5,
 }
 
@@ -1036,12 +1039,14 @@ mod tests {
     /// Our default is deliberately not nvCOMP's, and not Parabricks'.
     #[test]
     fn the_default_algorithm_favours_ratio_over_throughput() {
-        assert_eq!(DeflateAlgorithm::default(), DeflateAlgorithm::HighRatio);
-        // nvCOMP's own default is 1 and Parabricks ships 0; both are below us.
-        assert!(DeflateAlgorithm::default() as i32 > DeflateAlgorithm::LowRatio as i32);
+        assert_eq!(DeflateAlgorithm::default(), DeflateAlgorithm::MaxRatio);
+        // nvCOMP's own default is 1 and Parabricks ships 0; both are below us,
+        // and `4` is above them but measured strictly worse than `5` — same
+        // speed, larger output on every dataset tried. See the type's docs.
+        assert!(DeflateAlgorithm::default() as i32 > DeflateAlgorithm::HighRatio as i32);
         assert_eq!(
             DeflateCompressOpts::new(DeflateAlgorithm::default()).algorithm,
-            4
+            5
         );
     }
 

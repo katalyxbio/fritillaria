@@ -227,15 +227,17 @@ fn samtools_count(path: &std::path::Path) -> Option<usize> {
 fn the_ratio_stays_within_reach_of_htslib() {
     /// Largest tolerated excess over htslib's own output.
     ///
-    /// Measured on an L4 2026-09-10: +5.4% on HiFi, +0.8% on ONT, +2.5% on the
-    /// 2504-sample BCF — so 10% is the same floor the host reference uses, with
-    /// real headroom. It was provisionally 20% before that run, because the run
-    /// *was* the measurement.
+    /// At the `MaxRatio` default this is generous: +1.1% on HiFi, +0.7% on ONT,
+    /// −40.0% on the 2504-sample BCF. 8% is chosen to sit **above** `HighRatio`
+    /// (+5.4% worst) and **below** `MediumRatio` (+17.9% worst), so it passes
+    /// either archival rung and fails a silent downgrade to a speed rung — which
+    /// is exactly the boundary worth defending.
     ///
-    /// The margin is what makes this a check rather than a formality:
-    /// entropy-only output measured **+75.1%** on the same fixture, so a
-    /// silently downgraded level misses this by 65 points.
-    const TOLERANCE: f64 = 0.10;
+    /// It has already caught one: the default was moved to `2` on throughput
+    /// measured over WGS alone, and this rejected it on HiFi. That is what a
+    /// floor is for, and why `docs/compression.md` insists it be asserted rather
+    /// than printed.
+    const TOLERANCE: f64 = 0.08;
 
     let Some(c) = compressor() else { return };
 

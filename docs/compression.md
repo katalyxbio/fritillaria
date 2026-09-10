@@ -428,83 +428,85 @@ rented VM spent on the same shape of mistake — a test asserting several batche
 over a fixture that arrived in one — and this is that lesson applied before the
 fact rather than after.
 
-## Throughput measured, 2026-09-10 — and the default it argued for did not survive
+## Measured end to end, 2026-09-10 — and GPU compression is *not* a throughput win
 
-The axis this document argued the default *without*. L4, nvCOMP 5.3.0.16,
-10,348 MiB of real WGS payload already resident in VRAM, through
-`DeviceBgzfWriter`.
+Five runs to get this table, three of them wasted on my own errors. It is the
+complete picture, on one L4 and one 12-vCPU host, over the same 3 GiB WGS prefix
+(10,348 MiB of payload) that every other figure in this file uses.
 
-| `algorithm` | wall | MiB/s in | ratio | scratch/chunk |
-|---|---|---|---|---|
-| 0 entropy-only | 5.90s | 1753 | 1.58x | 0 |
-| 1 low | 5.95s | 1738 | 2.92x | 360,488 |
-| **2 medium** | **7.13s** | **1451** | **3.22x** | 655,400 |
-| **4 high** *(the default)* | 95.41s | 108 | 3.26x | 1,114,440 |
-| 5 max | *not measured — see below* | | | |
+### The ladder, both axes
 
-**Level 4 costs 13x the wall clock for 1.2% more compression than level 2.**
-Against htslib's own 3.37x on this file, level 2 is 4.7% larger and level 4 is
-3.4% larger — so the old default was buying **1.3 percentage points of file
-size for 88 extra seconds per 10 GiB**.
+Throughput over a 1 GiB prefix; ratios against the htslib bytes that came in.
 
-### The default was moved to 2 on this table, and moved back
+| rung | MiB/s | WGS ratio | HiFi | ONT | BCF | scratch/chunk |
+|---|---|---|---|---|---|---|
+| 0 entropy-only | 1741 | 1.57x | +75.1% | +19.5% | +367.1% | 0 |
+| 1 low | 1705 | 2.88x | +76.9% | +9.3% | +232.1% | 360,488 |
+| 2 medium | **1421** | 3.18x | +17.9% | +8.0% | +23.7% | 655,400 |
+| 4 high | 107 | 3.22x | +5.4% | +0.8% | +2.5% | 1,114,440 |
+| **5 max** *(the default)* | 108 | **3.40x** | **+1.1%** | **+0.7%** | **−40.0%** | 1,179,976 |
 
-**Level 4 costs 13x the wall clock for 1.2% more compression here, and at
-108 MiB/s it makes writing 10x slower than reading** (1040 MiB/s to records) —
-moving a pipeline's bottleneck rather than removing it. That looked decisive, and
-the default was changed to `2`.
+### The baseline that changes the story
 
-**The next run's ratio floor rejected it, on data this table does not contain:**
+`bgzip -c` on the same file and machine:
 
-| | `2` vs htslib | `4` vs htslib | gap |
+| | wall | MiB/s of input | ratio |
 |---|---|---|---|
-| Illumina WGS, 10 GiB | ~4.7% | 3.4% | 1.3 pts |
-| PacBio HiFi fixture | **+17.9%** | +5.4% | **12.5 pts** |
+| `bgzip -c -@ 11` | 29.12s | **355** | 3.38x |
+| `bgzip -c -@ 1` | 164.78s | 63 | 3.38x |
 
-The rungs are 1.3 points apart on short-read WGS and **12.5 points apart on
-HiFi**. Long-read uBAM is a primary input for this library, not an edge case, so
-a rung that is fine on short reads and poor on long ones is not an acceptable
-default. `4` stands.
+**At comparable output, GPU compression is ~3.3x slower than multithreaded
+htslib.** 108 MiB/s against 355. That does not change if the transfer `bgzip`
+would need is counted: a GPU producer choosing `bgzip` pays a D2H of the
+uncompressed 10.1 GiB (~6.7s at the measured 1.5 GiB/s), so its real cost is
+~29–36s against our 95s for the whole file. Still 2.6–3.3x behind.
 
-**Three things worth keeping from getting this wrong:**
+**Only rungs 0–2 make the GPU write path faster than the CPU**, and rung 2 costs
+5.9% of output on WGS and 18–24% on HiFi and genotype BCF.
 
-- **One dataset is not enough to move a default that decides how large
-  everybody's files are.** The throughput table above is a single file. It was
-  treated as sufficient because it was the first hard number after a long stretch
-  of having none, which is exactly when a measurement is most persuasive and
-  least complete.
-- **The ratio floor earned its keep by rejecting a deliberate change**, not a
-  regression. That is what a floor is for, and it is why `docs` said to assert it
-  rather than print it.
-- **The two-rung ladder test was too weak to see this coming.** It compared
-  entropy-only against the default on one file, which showed monotonicity and
-  nothing else. It now prints all five rungs against htslib on all three real
-  fixtures, so the disagreement between data types is visible before a run rather
-  than during one.
+**So do not quote a compression speedup. There is not one at archival quality.**
+This is the opposite of the read path's result and it should be said in the same
+breath as it: `libdeflate` is simply a better codec per unit time than nvCOMP's
+deflate at these ratios. What the GPU path offers on the write side is that the
+records never leave the device — worth ~6.7s of D2H here — and that is swamped by
+the ~66s the kernel costs at rung 5.
 
-**The choice is open, not settled.** What decides it is the cell nobody has
-filled: throughput per rung on *long-read* data. If `2` is 13x faster there too,
-18% is a lot to pay for it; if the throughput gap is narrower on long reads, `4`
-is simply right. Level 1 is the other candidate — 2.92x at essentially level 0's
-speed on WGS — but it gives up 15% against htslib there, which is the permanent
-cost the original argument was right to refuse.
+### `5` beats `4` outright, so the default is `5`
 
-### What this run did not produce, and why
+The one unambiguous result: `MaxRatio` produced smaller output than `HighRatio`
+on **all four** datasets, at the same speed (9.49s against 9.55s) and 5.9% more
+scratch. No tradeoff to weigh, so the default moved `4` → `5`.
 
-`MaxRatio` and the `bgzip -c` baseline are **missing, and the benchmark's design
-is why.** The ladder swept all 10 GiB at every rung; level 4 took 95s, level 5 is
-slower still, and the run hit `colab exec`'s inactivity timeout partway through —
-taking the baseline, which runs afterwards, down with it. An hour of billable VM
-for a table missing its last row and its comparison.
+The BCF row is the striking one: **40% smaller than what bcftools wrote.** That
+matches the zlib-9 result recorded far above — bcftools wrote that file at level
+6, and genotype data keeps compressing well past it.
 
-The safety machinery worked: no `[combined] OK` sentinel was printed, the run
-reported failure, and the session was released. The waste was real anyway.
+### The ladder is not monotone, which is worth knowing
 
-Fixed by bounding the ladder to a 1 GiB prefix (`LADDER_BYTES`). Comparing rungs
-never needed the whole file — they are being measured against each other — and
-the full-file number comes from the sweep, at the shipping level. **The general
-lesson: a benchmark whose most expensive stage is unbounded will eventually eat
-the stages after it, and those are the ones with the baseline in them.**
+Rung 1 is *worse* than rung 0 on HiFi (+76.9% against +75.1%). NVIDIA's rungs are
+labelled by intent, not guaranteed ordered on real data, and a "higher is
+smaller" assumption would be wrong here. The test asserts monotonicity only
+between rung 0 and rung 4, which is the span where it actually holds.
+
+### What this cost, and the process lesson
+
+Three runs of five produced nothing usable:
+
+1. **An over-fitted FFI assertion.** Scratch is exactly linear with no CUDA
+   driver present and not on a device; the test pinned the environment it was
+   written in. Fixed, and `--no-fail-fast` added so one unit test can no longer
+   cost the whole device suite.
+2. **An unbounded ladder.** Sweeping all 10 GiB at every rung overran
+   `colab exec`'s timeout and took the `bgzip` baseline — which ran afterwards —
+   down with it. Bounded to a 1 GiB prefix; comparing rungs never needed more.
+3. **A default moved on one dataset.** WGS said rung 2 was 13x faster for 1.2%;
+   the ratio floor rejected it on HiFi at +17.9%. The two-rung ladder test could
+   not have caught it, and now prints all five rungs on all three fixtures.
+
+The common thread: **each failure was in the measurement apparatus, not the
+thing being measured**, and each was findable without a GPU. The sentinel and
+teardown discipline held every time — no false pass, no leaked VM — but that only
+bounds the damage, it does not prevent it.
 
 ## What is still unmeasured
 
@@ -512,22 +514,27 @@ Two of the three questions this section opened with are now answered on hardware
 (see the L4 section above). What is left:
 
 1. ~~**nvCOMP's actual ratio at each level on real BAM and BCF payloads.**~~
-   Measured 2026-09-10: +0.8% to +5.4% against htslib at level 4, and +75.1% at
-   level 0.
-2. ~~**Throughput.**~~ Measured 2026-09-10; see above. What remains is
-   `MaxRatio`, and **the `bgzip -c` baseline** — so there is still no answer to
-   "is 1451 MiB/s good?", only to "which rung is best". Until that baseline
-   exists, do not claim compression is faster than the CPU; claim only that the
-   default is the right rung.
+   Measured 2026-09-10, all five rungs on all three fixtures; see above.
+2. ~~**Throughput, and the `bgzip -c` baseline.**~~ Both measured 2026-09-10.
+   The answer is that GPU compression is **3.3x slower than `bgzip -@11` at
+   comparable output**, so what is left to claim on the write side is device
+   residency, not speed.
 3. ~~**Whether the output is spec-valid BGZF that samtools accepts.**~~ Cleared
    for the host path locally and for the device path on the VM: `samtools`
    1.19.2 read a GPU-compressed BAM and agreed on the record count.
 
-The batch-split seam is now driven, though not at realistic sizes: the writer's
-tests force one chunk per batch, so a 13-block fixture spans 13 batches — the
-hardest split available. What no test reaches is a batch that is large because
-the *data* is, which is the same gap as the throughput one and wants the same
-fixture.
+The batch-split seam is now driven at both ends: the writer's tests force one
+chunk per batch over a 13-block fixture, and `bench_compress` drives 166,218
+chunks across 41–650 batches on the real WGS file.
+
+What remains unmeasured, and it is the question the baseline raises: **whether
+the compression kernel is slow for a reason we could fix.** 108 MiB/s at rung 5
+against `libdeflate`'s 355 MiB/s across 11 cores is a wide gap, and nothing here
+attributes it — no phase breakdown of the compression path exists, so it is not
+known how much is nvCOMP's kernel, the framing pass, the mid-batch synchronise,
+or the per-batch allocations. That attribution is the obvious next measurement,
+and until it exists "the GPU is slower at compression" is an observation rather
+than a diagnosis.
 
 ## The API, transcribed
 
