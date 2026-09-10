@@ -322,40 +322,89 @@ than recomputing it. Two copies of that rule would be two chances to disagree
 about where a block starts — which produces a plausible-looking file rather than
 an error.
 
+## nvCOMP measured on an L4, 2026-09-10 — and the fast setting is worse than projected
+
+Everything above about nvCOMP's ratio was NVIDIA's header comment. This is ours,
+on our fixtures, on real hardware: an L4 (sm_89), nvCOMP 5.3.0.16, through
+`NvcompCompressor` at the shipping default.
+
+| Fixture | htslib | nvCOMP-4 | vs htslib | our miniz-6 |
+|---|---|---|---|---|
+| `pacbio_hifi.bam` | 151,245 | 159,487 | **+5.4%** | 160,291 (+6.0%) |
+| `ont_ultralong.bam` | 231,261 | 233,178 | **+0.8%** | 237,464 (+2.7%) |
+| `kg_phase3.bcf` | 182,663 | 187,192 | **+2.5%** | 187,672 (+2.7%) |
+
+**"Beats Zlib level 6" holds up against libdeflate too.** Within 1–6% of htslib
+on real data, and *better than our own CPU reference on all three fixtures* —
+which was not a given, since libdeflate beats zlib and miniz is not libdeflate.
+
+### The ladder, and the correction
+
+Same fixture, same run, both ends of it:
+
+| `algorithm` | bytes | vs htslib | scratch/chunk |
+|---|---|---|---|
+| 0 entropy-only | 264,841 | **+75.1%** | 0 |
+| **4 high ratio** | **159,487** | **+5.4%** | 1,114,440 |
+
+**Level 0 output is 66% larger than level 4.** That settles the design question
+this document opened with, and it settles it harder than the projection did:
+
+- **The estimate above understated the cost of speed, and the reason is
+  instructive.** It used zlib level 1 as a proxy and got +20.3% on this fixture.
+  The real figure is **+75.1%**, because zlib-1 is still a full LZ77 matcher
+  merely tuned for speed, while nvCOMP's level 0 is *entropy-only* — Huffman
+  coding with no match search at all. A proxy chosen for its speed rating was
+  the wrong proxy for a codec that removes a whole stage.
+- **So `algorithm = 4` stays the default, with more margin than expected.** On a
+  100 GB BAM the entropy-only setting would cost ~66 GB, stored for years,
+  against wall-clock saved once.
+- **And the VRAM ladder is confirmed from the other side**: 0 bytes of scratch at
+  level 0 against 1,114,440 at level 4. The trade is real and it is the price of
+  that 66%.
+
+### The acceptance bar, cleared on device
+
+`samtools` **1.19.2** on the VM read a BAM compressed entirely on the GPU and
+reported the same record count as for htslib's own. That is the binary question,
+and the empty-block fix is what made it answerable — see below.
+
+Two other things the run confirmed and only hardware could:
+
+- **The device entry point and the host wrapper agree byte for byte.** Same
+  compressor, same bytes, so a caller whose records are already in VRAM gets
+  exactly what an upload-then-compress caller gets.
+- **GPU and CPU output differ in bytes and agree in content.** Asserted as
+  `assert_ne!` on the bytes: byte-identical output would have meant nvCOMP was
+  not running at all.
+
+The ratio floor in `tests/nvcomp_compress.rs` is now 10% rather than the
+provisional 20%, matching the host reference. Entropy-only output would miss it
+by 65 points, which is the margin that makes it a real check.
+
 ## What is still unmeasured
 
-Everything above about nvCOMP is **NVIDIA's claim, not our measurement.** The
-zlib and htslib numbers are ours, on our fixtures; the nvCOMP ladder is a header
-comment. Before any of this is believed:
+Two of the three questions this section opened with are now answered on hardware
+(see the L4 section above). What is left:
 
-1. **nvCOMP's actual ratio at each level on real BAM and BCF payloads**, against
-   the htslib bar in the table above. "Beats Zlib level 6" is a claim about
-   zlib, and libdeflate is better than zlib.
-2. **Throughput at level 4**, which is the level we would actually ship. The
-   9.39 GB/s figure quoted for an H100 is presumably level 0 or 1, and does not
-   transfer.
-3. ~~**Whether the output is spec-valid BGZF that samtools accepts**~~ — settled
-   for the *host* path on 2026-09-10: `samtools`/`bcftools` read every
-   recompressed fixture and report the same record counts, and re-framing a
-   fixture's trailing empty block reproduces the 28-byte EOF marker byte for
-   byte. The device path still has to clear the same bar, but the harness that
-   checks it now exists and runs locally.
+1. ~~**nvCOMP's actual ratio at each level on real BAM and BCF payloads.**~~
+   Measured 2026-09-10: +0.8% to +5.4% against htslib at level 4, and +75.1% at
+   level 0.
+2. **Throughput.** Still entirely unmeasured — nothing here has been *timed*.
+   The tests assert ratio and correctness and say nothing about speed, and the
+   9.39 GB/s figure NVIDIA quotes for an H100 is presumably level 0 or 1 and does
+   not transfer to level 4 on an L4. **Do not quote a compression throughput
+   number; there is not one.** The obvious next step is a `bench_compress`
+   example alongside `bench_decode`, over the same 3 GiB WGS prefix.
+3. ~~**Whether the output is spec-valid BGZF that samtools accepts.**~~ Cleared
+   for the host path locally and for the device path on the VM: `samtools`
+   1.19.2 read a GPU-compressed BAM and agreed on the record count.
 
-The memory table above *is* ours and needs no device — nvCOMP answers those
-queries on a machine with no driver, which is why they were measured before
-anything was built rather than discovered on a rented VM. Only the ratio and
-throughput columns need hardware.
-
-`tests/nvcomp_compress.rs` is written and asserts (1) at a deliberately loose
-20% floor, because the first run of that test *is* the measurement. Tighten it
-once there are real numbers here — and record them, because a 20% tolerance
-tightened to nothing is a test that no longer says anything.
-
-The one result that would overturn the design is
-`a_higher_algorithm_produces_a_smaller_file` failing: if level 4 is not
-meaningfully smaller than level 0 on real genomic data, the default is paying
-17x the scratch and ~15x the batch size for nothing, and Parabricks' choice is
-simply correct.
+Also unmeasured, and it decides whether the batch sizing above is even exercised:
+**nobody has compressed anything large enough to need more than one batch.** The
+fixtures are kilobytes; `CompressBudget` says an L4 holds ~17,800 blocks and no
+test has come close. The seam that matters — a file split across batches — has no
+device-side driver to test yet, which is the missing writer in *Still open*.
 
 ## The API, transcribed
 

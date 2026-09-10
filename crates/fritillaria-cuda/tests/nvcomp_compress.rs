@@ -225,11 +225,15 @@ fn samtools_count(path: &std::path::Path) -> Option<usize> {
 fn the_ratio_stays_within_reach_of_htslib() {
     /// Largest tolerated excess over htslib's own output.
     ///
-    /// Looser than the host reference's 10%, because nvCOMP is a black box we
-    /// have not measured on this data — the first run of this test is itself
-    /// the measurement. Tighten it once `docs/compression.md` records real
-    /// numbers.
-    const TOLERANCE: f64 = 0.20;
+    /// Measured on an L4 2026-09-10: +5.4% on HiFi, +0.8% on ONT, +2.5% on the
+    /// 2504-sample BCF — so 10% is the same floor the host reference uses, with
+    /// real headroom. It was provisionally 20% before that run, because the run
+    /// *was* the measurement.
+    ///
+    /// The margin is what makes this a check rather than a formality:
+    /// entropy-only output measured **+75.1%** on the same fixture, so a
+    /// silently downgraded level misses this by 65 points.
+    const TOLERANCE: f64 = 0.10;
 
     let Some(c) = compressor() else { return };
 
