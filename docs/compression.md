@@ -428,7 +428,7 @@ rented VM spent on the same shape of mistake — a test asserting several batche
 over a fixture that arrived in one — and this is that lesson applied before the
 fact rather than after.
 
-## Throughput measured, 2026-09-10 — and it moves the default from 4 to 2
+## Throughput measured, 2026-09-10 — and the default it argued for did not survive
 
 The axis this document argued the default *without*. L4, nvCOMP 5.3.0.16,
 10,348 MiB of real WGS payload already resident in VRAM, through
@@ -439,7 +439,7 @@ The axis this document argued the default *without*. L4, nvCOMP 5.3.0.16,
 | 0 entropy-only | 5.90s | 1753 | 1.58x | 0 |
 | 1 low | 5.95s | 1738 | 2.92x | 360,488 |
 | **2 medium** | **7.13s** | **1451** | **3.22x** | 655,400 |
-| 4 high *(was our default)* | 95.41s | 108 | 3.26x | 1,114,440 |
+| **4 high** *(the default)* | 95.41s | 108 | 3.26x | 1,114,440 |
 | 5 max | *not measured — see below* | | | |
 
 **Level 4 costs 13x the wall clock for 1.2% more compression than level 2.**
@@ -447,29 +447,46 @@ Against htslib's own 3.37x on this file, level 2 is 4.7% larger and level 4 is
 3.4% larger — so the old default was buying **1.3 percentage points of file
 size for 88 extra seconds per 10 GiB**.
 
-### Why this overturns the decision rather than qualifying it
+### The default was moved to 2 on this table, and moved back
 
-The argument for level 4 was that a size penalty is permanent and paid by every
-future reader, while a time cost is paid once. That reasoning is still right; the
-rung it picked was wrong, for a reason only measurement could show:
+**Level 4 costs 13x the wall clock for 1.2% more compression here, and at
+108 MiB/s it makes writing 10x slower than reading** (1040 MiB/s to records) —
+moving a pipeline's bottleneck rather than removing it. That looked decisive, and
+the default was changed to `2`.
 
-- **At 108 MiB/s the write path is 10x slower than the read path.** Reading the
-  same file to records runs at 1040 MiB/s. A pipeline that reads at 1040 and
-  writes at 108 has not been accelerated — it has moved its bottleneck. Level 2
-  at 1451 MiB/s is *faster* than the read path, so the two stay balanced.
-- **The 1.2% it buys is not the "permanent cost" the argument was about.** That
-  argument was aimed at entropy-only, which measures **+75.1%** against htslib
-  and is genuinely disqualifying. Between 2 and 4 there is no such gap.
-- **The header's labels were the anchor, and they are about zlib.** "Beats Zlib
-  level 6" (4) sounded decisive next to "beats Zlib level 1" (2). On real WGS the
-  two land 1.2% apart, and the label carried no information about cost.
+**The next run's ratio floor rejected it, on data this table does not contain:**
 
-So: **spend the ratio that is nearly free, not the ratio that costs 13x.** Levels
-4 and 5 stay exposed for an archival write where wall clock genuinely does not
-matter, and the level remains caller-visible.
+| | `2` vs htslib | `4` vs htslib | gap |
+|---|---|---|---|
+| Illumina WGS, 10 GiB | ~4.7% | 3.4% | 1.3 pts |
+| PacBio HiFi fixture | **+17.9%** | +5.4% | **12.5 pts** |
 
-Level 1 is worth noting as the runner-up — 2.92x at essentially level 0's speed —
-but it gives up 15% of file size against htslib, which is the kind of permanent
+The rungs are 1.3 points apart on short-read WGS and **12.5 points apart on
+HiFi**. Long-read uBAM is a primary input for this library, not an edge case, so
+a rung that is fine on short reads and poor on long ones is not an acceptable
+default. `4` stands.
+
+**Three things worth keeping from getting this wrong:**
+
+- **One dataset is not enough to move a default that decides how large
+  everybody's files are.** The throughput table above is a single file. It was
+  treated as sufficient because it was the first hard number after a long stretch
+  of having none, which is exactly when a measurement is most persuasive and
+  least complete.
+- **The ratio floor earned its keep by rejecting a deliberate change**, not a
+  regression. That is what a floor is for, and it is why `docs` said to assert it
+  rather than print it.
+- **The two-rung ladder test was too weak to see this coming.** It compared
+  entropy-only against the default on one file, which showed monotonicity and
+  nothing else. It now prints all five rungs against htslib on all three real
+  fixtures, so the disagreement between data types is visible before a run rather
+  than during one.
+
+**The choice is open, not settled.** What decides it is the cell nobody has
+filled: throughput per rung on *long-read* data. If `2` is 13x faster there too,
+18% is a lot to pay for it; if the throughput gap is narrower on long reads, `4`
+is simply right. Level 1 is the other candidate — 2.92x at essentially level 0's
+speed on WGS — but it gives up 15% against htslib there, which is the permanent
 cost the original argument was right to refuse.
 
 ### What this run did not produce, and why

@@ -259,34 +259,60 @@ fn the_ratio_stays_within_reach_of_htslib() {
     }
 }
 
-/// The ladder is real in both directions, and the measurement the default rests
-/// on: higher levels must actually produce smaller files.
+/// Every rung against htslib, on every real fixture.
 ///
-/// If this ever fails, the default is costing 17x the scratch for nothing.
+/// **This exists because a two-rung version was not enough.** It used to compare
+/// only entropy-only against the default on one file, which said the ladder was
+/// monotone and nothing else. The compression default was then moved from `4` to
+/// `2` on throughput measured over Illumina WGS — where the two are 1.3 points
+/// apart — and the ratio floor caught that `2` is **12.5 points** worse than `4`
+/// on PacBio HiFi. The default moved back, and this is the table that would have
+/// shown the disagreement before a device run rather than during one.
+///
+/// Long-read uBAM is a primary input for this library, so a rung that is fine on
+/// short reads and poor on long ones is not an acceptable default. Printing the
+/// whole matrix is what makes that visible.
 #[test]
-fn a_higher_algorithm_produces_a_smaller_file() {
+fn every_rung_reports_its_ratio_against_htslib() {
+    const RUNGS: [DeflateAlgorithm; 5] = [
+        DeflateAlgorithm::EntropyOnly,
+        DeflateAlgorithm::LowRatio,
+        DeflateAlgorithm::MediumRatio,
+        DeflateAlgorithm::HighRatio,
+        DeflateAlgorithm::MaxRatio,
+    ];
+
     let Some(_) = compressor() else { return };
 
-    let inflated = inflate(&fixture("pacbio_hifi.bam"));
-    let mut sizes = Vec::new();
+    println!("\n-- ratio per rung, against the htslib bytes that came in --");
+    for name in ["pacbio_hifi.bam", "ont_ultralong.bam", "kg_phase3.bcf"] {
+        let raw = fixture(name);
+        let inflated = inflate(&raw);
+        println!("\n{name}  (htslib {} bytes)", raw.len());
 
-    for algorithm in [DeflateAlgorithm::EntropyOnly, DeflateAlgorithm::HighRatio] {
-        let c = NvcompCompressor::with_algorithm(0, algorithm).unwrap();
-        let size = compress_host(&c, &inflated).byte_len();
-        println!(
-            "{algorithm:?}: {size} bytes, scratch {} per chunk",
-            c.budget().scratch_per_chunk
+        let mut sizes = Vec::new();
+        for algorithm in RUNGS {
+            let c = NvcompCompressor::with_algorithm(0, algorithm).unwrap();
+            let size = compress_host(&c, &inflated).byte_len();
+            println!(
+                "  {:>14}  {:>9}  {:>+7.1}%  scratch {:>9}",
+                format!("{algorithm:?}"),
+                size,
+                (size as f64 / raw.len() as f64 - 1.0) * 100.0,
+                c.budget().scratch_per_chunk,
+            );
+            sizes.push(size);
+        }
+
+        // The ladder must at least be monotone in the direction it claims, or
+        // the scratch the upper rungs cost is buying nothing.
+        assert!(
+            sizes[3] < sizes[0],
+            "{name}: HighRatio produced {} bytes against EntropyOnly's {}",
+            sizes[3],
+            sizes[0]
         );
-        sizes.push(size);
     }
-
-    assert!(
-        sizes[1] < sizes[0],
-        "HighRatio produced {} bytes against EntropyOnly's {} — the ratio \
-         default is paying 17x the scratch for nothing",
-        sizes[1],
-        sizes[0]
-    );
 }
 
 /// Incompressible input is where the stored fallback and the block cap meet.
